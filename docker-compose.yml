@@ -1,0 +1,11 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mcp-gateway.yaml:/app/config/mcp-gateway.yaml:ro
+    environment:
+      - MCP_GATEWAY_CONFIG=/app/config/mcp-gateway.yaml
+      - LOG_LEVEL=info
+      - LOG_FORMAT=pretty
