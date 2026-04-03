@@ -7,6 +7,8 @@ import { BackendManager } from "./backend.js";
 import { Router } from "./router.js";
 import { GatewayServer } from "./server.js";
 import { ConfigWatcher } from "./watcher.js";
+import { createLogger } from "./logger.js";
+import { MetricsRegistry } from "./metrics.js";
 
 const CONFIG_PATH = process.env.MCP_GATEWAY_CONFIG ?? "mcp-gateway.yaml";
 const RETRY_INTERVAL_MS = 30_000;
@@ -26,7 +28,41 @@ interface UnavailableEntry {
 }
 
 async function main(): Promise<void> {
-  console.log(`Loading config from ${CONFIG_PATH}`);
+  const logger = createLogger();
+  const metrics = new MetricsRegistry();
+
+  // Define all metrics
+  metrics.defineCounter(
+    "gateway_tool_calls_total",
+    "Total tool calls routed through the gateway"
+  );
+  metrics.defineHistogram(
+    "gateway_tool_call_duration_seconds",
+    "Tool call latency in seconds",
+    [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+  );
+  metrics.defineCounter(
+    "gateway_tool_activations_total",
+    "Tool activations"
+  );
+  metrics.defineCounter(
+    "gateway_tool_deactivations_total",
+    "Tool deactivations"
+  );
+  metrics.defineCounter(
+    "gateway_backend_connections_total",
+    "Backend connection attempts"
+  );
+  metrics.defineGauge(
+    "gateway_active_sessions",
+    "Current active session count"
+  );
+  metrics.defineCounter(
+    "gateway_errors_total",
+    "Error counts by type"
+  );
+
+  logger.info("Loading config", { path: CONFIG_PATH });
   const config = loadConfig(CONFIG_PATH);
 
   const registry = new ToolRegistry();
@@ -48,7 +84,7 @@ async function main(): Promise<void> {
     getDescription: () => string | undefined
   ) {
     backendManager.onToolsChanged(serverName, async () => {
-      console.log(`Backend '${serverName}' tools changed, refreshing...`);
+      logger.info("Backend tools changed, refreshing", { server: serverName });
       try {
         const newTools = await backendManager.refreshTools(serverName);
         const oldToolNames = registry.getToolNamesForServer(serverName);
@@ -64,7 +100,10 @@ async function main(): Promise<void> {
         }
         await server.notifyAllSessions();
       } catch (error) {
-        console.error(`Failed to refresh tools for '${serverName}':`, error);
+        logger.error("Failed to refresh tools", {
+          server: serverName,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     });
   }
@@ -116,9 +155,13 @@ async function main(): Promise<void> {
   function subscribeToCrash(serverName: string, entry: UnavailableEntry) {
     if (entry.type !== "stdio") return;
     backendManager.onClose(serverName, async () => {
-      console.warn(
-        `Stdio backend '${serverName}' crashed, marking unavailable`
-      );
+      logger.warn("Stdio backend crashed, marking unavailable", {
+        server: serverName,
+      });
+      metrics.incrementCounter("gateway_errors_total", {
+        server: serverName,
+        type: "crash",
+      });
       const toolNames = registry.getToolNamesForServer(serverName);
       sessions.deactivateServerToolsFromAll(toolNames);
       registry.markUnavailable(serverName);
@@ -135,17 +178,23 @@ async function main(): Promise<void> {
   for (const serverConfig of config.servers) {
     try {
       const label = serverConfig.url ?? serverConfig.command;
-      console.log(
-        `Connecting to backend '${serverConfig.name}' (${label})`
-      );
+      logger.info("Connecting to backend", {
+        server: serverConfig.name,
+        endpoint: label,
+      });
       const { tools, entry } = await connectServer(serverConfig);
       registry.registerServer(serverConfig.name, {
         description: serverConfig.description,
         tools,
       });
-      console.log(
-        `Connected to '${serverConfig.name}' — ${tools.length} tools registered`
-      );
+      logger.info("Connected to backend", {
+        server: serverConfig.name,
+        tools: tools.length,
+      });
+      metrics.incrementCounter("gateway_backend_connections_total", {
+        server: serverConfig.name,
+        status: "success",
+      });
 
       subscribeToToolChanges(
         serverConfig.name,
@@ -154,9 +203,18 @@ async function main(): Promise<void> {
       );
       subscribeToCrash(serverConfig.name, entry);
     } catch (error) {
-      console.warn(
-        `Failed to connect to '${serverConfig.name}': ${error instanceof Error ? error.message : error}`
-      );
+      logger.warn("Failed to connect to backend", {
+        server: serverConfig.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      metrics.incrementCounter("gateway_backend_connections_total", {
+        server: serverConfig.name,
+        status: "error",
+      });
+      metrics.incrementCounter("gateway_errors_total", {
+        server: serverConfig.name,
+        type: "connection",
+      });
       registry.markUnavailable(serverConfig.name);
       if (serverConfig.url) {
         unavailable.push({
@@ -191,6 +249,8 @@ async function main(): Promise<void> {
     metaTools,
     router,
     serverUrls,
+    logger,
+    metrics,
   });
 
   let retryInterval: ReturnType<typeof setInterval> | null = null;
@@ -202,9 +262,10 @@ async function main(): Promise<void> {
         const entry = unavailable[i];
 
         if (entry.type === "stdio" && entry.retryCount >= STDIO_MAX_RETRIES) {
-          console.error(
-            `Server '${entry.name}' failed to start after ${STDIO_MAX_RETRIES} attempts, giving up. Fix the command and reload config.`
-          );
+          logger.error("Server failed to start, giving up", {
+            server: entry.name,
+            maxRetries: STDIO_MAX_RETRIES,
+          });
           unavailable.splice(i, 1);
           continue;
         }
@@ -234,14 +295,27 @@ async function main(): Promise<void> {
           subscribeToCrash(entry.name, entry);
 
           unavailable.splice(i, 1);
-          console.log(
-            `Reconnected to '${entry.name}' — ${tools.length} tools registered`
-          );
+          logger.info("Reconnected to backend", {
+            server: entry.name,
+            tools: tools.length,
+          });
+          metrics.incrementCounter("gateway_backend_connections_total", {
+            server: entry.name,
+            status: "success",
+          });
           await server.notifyAllSessions();
         } catch {
           if (entry.type === "stdio") {
             entry.retryCount++;
           }
+          metrics.incrementCounter("gateway_backend_connections_total", {
+            server: entry.name,
+            status: "error",
+          });
+          metrics.incrementCounter("gateway_errors_total", {
+            server: entry.name,
+            type: "connection",
+          });
         }
       }
       if (unavailable.length === 0 && retryInterval) {
@@ -258,7 +332,7 @@ async function main(): Promise<void> {
   const watcher = new ConfigWatcher(
     CONFIG_PATH,
     async (newConfig) => {
-      console.log("Config changed, reloading...");
+      logger.info("Config changed, reloading");
       const oldNames = new Set(config.servers.map((s) => s.name));
       const newNames = new Set(newConfig.servers.map((s) => s.name));
 
@@ -267,7 +341,7 @@ async function main(): Promise<void> {
         if (!newNames.has(name)) {
           const staleIdx = unavailable.findIndex((u) => u.name === name);
           if (staleIdx !== -1) unavailable.splice(staleIdx, 1);
-          console.log(`Removing backend '${name}'`);
+          logger.info("Removing backend", { server: name });
           const toolNames = registry.getToolNamesForServer(name);
           sessions.deactivateServerToolsFromAll(toolNames);
           registry.removeServer(name);
@@ -290,7 +364,9 @@ async function main(): Promise<void> {
           ) {
             const staleIdx = unavailable.findIndex((u) => u.name === sc.name);
             if (staleIdx !== -1) unavailable.splice(staleIdx, 1);
-            console.log(`Backend '${sc.name}' config changed, reconnecting...`);
+            logger.info("Backend config changed, reconnecting", {
+              server: sc.name,
+            });
             const toolNames = registry.getToolNamesForServer(sc.name);
             sessions.deactivateServerToolsFromAll(toolNames);
             registry.removeServer(sc.name);
@@ -307,11 +383,15 @@ async function main(): Promise<void> {
                   config.servers.find((s) => s.name === sc.name)?.description
               );
               subscribeToCrash(sc.name, entry);
-              console.log(
-                `Reconnected to '${sc.name}' — ${tools.length} tools`
-              );
+              logger.info("Reconnected to backend", {
+                server: sc.name,
+                tools: tools.length,
+              });
             } catch (error) {
-              console.warn(`Failed to reconnect to '${sc.name}':`, error);
+              logger.warn("Failed to reconnect to backend", {
+                server: sc.name,
+                error: error instanceof Error ? error.message : String(error),
+              });
               registry.markUnavailable(sc.name);
             }
             await server.notifyAllSessions();
@@ -323,7 +403,7 @@ async function main(): Promise<void> {
       for (const sc of newConfig.servers) {
         if (!oldNames.has(sc.name)) {
           const label = sc.url ?? sc.command;
-          console.log(`Adding backend '${sc.name}' (${label})`);
+          logger.info("Adding backend", { server: sc.name, endpoint: label });
           try {
             const { tools, entry } = await connectServer(sc);
             registry.registerServer(sc.name, {
@@ -336,11 +416,15 @@ async function main(): Promise<void> {
                 config.servers.find((s) => s.name === sc.name)?.description
             );
             subscribeToCrash(sc.name, entry);
-            console.log(
-              `Connected to '${sc.name}' — ${tools.length} tools`
-            );
+            logger.info("Connected to backend", {
+              server: sc.name,
+              tools: tools.length,
+            });
           } catch (error) {
-            console.warn(`Failed to connect to '${sc.name}':`, error);
+            logger.warn("Failed to connect to backend", {
+              server: sc.name,
+              error: error instanceof Error ? error.message : String(error),
+            });
             registry.markUnavailable(sc.name);
           }
           await server.notifyAllSessions();
@@ -352,7 +436,9 @@ async function main(): Promise<void> {
       config.gateway = newConfig.gateway;
     },
     (error) => {
-      console.error("Config reload failed, keeping previous config:", error.message);
+      logger.error("Config reload failed, keeping previous config", {
+        error: error.message,
+      });
     }
   );
   watcher.start();
@@ -361,11 +447,15 @@ async function main(): Promise<void> {
   const port = config.gateway.port;
   const host = config.gateway.host;
   await server.startMcp(port, host);
-  console.log(`MCP Gateway listening on http://${host}:${port}/mcp`);
+  logger.info("MCP Gateway listening", {
+    host,
+    port,
+    url: `http://${host}:${port}/mcp`,
+  });
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\nShutting down...");
+    logger.info("Shutting down");
     watcher.stop();
     await server.stop();
     await backendManager.disconnectAll();
