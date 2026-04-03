@@ -3,8 +3,11 @@ import { parse } from "yaml";
 
 export interface ServerConfig {
   name: string;
-  url: string;
+  url?: string;
+  command?: string;
   description?: string;
+  env?: Record<string, string>;
+  cwd?: string;
 }
 
 export interface GatewayConfig {
@@ -34,8 +37,20 @@ export function loadConfig(filePath: string): Config {
 
   const names = new Set<string>();
   for (const server of servers) {
-    if (!server.name || !server.url) {
-      throw new Error(`Each server must have 'name' and 'url' fields`);
+    if (!server.name) {
+      throw new Error(`Each server must have a 'name' field`);
+    }
+    const hasUrl = !!server.url;
+    const hasCommand = !!server.command;
+    if (hasUrl === hasCommand) {
+      throw new Error(
+        `Server '${server.name}' must have either 'url' or 'command', not ${hasUrl ? "both" : "neither"}`
+      );
+    }
+    if (hasUrl && (server.env || server.cwd)) {
+      throw new Error(
+        `Server '${server.name}': 'env' and 'cwd' are only allowed for stdio servers (using 'command')`
+      );
     }
     if (names.has(server.name)) {
       throw new Error(`Config has duplicate server name: '${server.name}'`);
@@ -67,4 +82,9 @@ function substituteEnvVarsInObject(obj: any): any {
     return result;
   }
   return obj;
+}
+
+export function parseCommand(command: string): { command: string; args: string[] } {
+  const parts = command.trim().split(/\s+/);
+  return { command: parts[0], args: parts.slice(1) };
 }
