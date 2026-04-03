@@ -14,6 +14,7 @@ export interface ServerConfig {
   env?: Record<string, string>;
   cwd?: string;
   tools?: ToolPolicyConfig;
+  timeout?: number;
 }
 
 export interface AuthConfig {
@@ -33,10 +34,18 @@ export interface RbacConfig {
   roles: Record<string, RbacRole>;
 }
 
+export interface RateLimitConfig {
+  enabled: boolean;
+  maxRequests: number;
+  windowSeconds: number;
+}
+
 export interface GatewayConfig {
   port: number;
   host: string;
   auth?: AuthConfig;
+  timeout?: number;
+  rateLimit?: RateLimitConfig;
 }
 
 export interface Config {
@@ -68,10 +77,33 @@ export function loadConfig(filePath: string): Config {
     }
   }
 
+  // Parse rate limit config
+  let rateLimit: RateLimitConfig | undefined;
+  if (substituted?.gateway?.rateLimit) {
+    const rateLimitConfig = substituted.gateway.rateLimit;
+    rateLimit = {
+      enabled: rateLimitConfig.enabled ?? false,
+      maxRequests: rateLimitConfig.maxRequests ?? 100,
+      windowSeconds: rateLimitConfig.windowSeconds ?? 60,
+    };
+
+    // Validate rate limit config
+    if (rateLimit.enabled) {
+      if (typeof rateLimit.maxRequests !== "number" || rateLimit.maxRequests <= 0) {
+        throw new Error("rateLimit.maxRequests must be a positive number");
+      }
+      if (typeof rateLimit.windowSeconds !== "number" || rateLimit.windowSeconds <= 0) {
+        throw new Error("rateLimit.windowSeconds must be a positive number");
+      }
+    }
+  }
+
   const gateway: GatewayConfig = {
     port: substituted?.gateway?.port ?? 8080,
     host: substituted?.gateway?.host ?? "0.0.0.0",
     auth,
+    timeout: substituted?.gateway?.timeout,
+    rateLimit,
   };
 
   const servers: ServerConfig[] = substituted?.servers;
@@ -98,6 +130,12 @@ export function loadConfig(filePath: string): Config {
     }
     if (names.has(server.name)) {
       throw new Error(`Config has duplicate server name: '${server.name}'`);
+    }
+    // Validate timeout
+    if (server.timeout !== undefined && (typeof server.timeout !== 'number' || server.timeout <= 0)) {
+      throw new Error(
+        `Server '${server.name}' has invalid timeout: must be a positive number (got ${server.timeout})`
+      );
     }
     // Validate tool policy
     if (server.tools) {
@@ -135,6 +173,16 @@ export function loadConfig(filePath: string): Config {
     if (rbac.defaultPolicy !== "deny" && rbac.defaultPolicy !== "allow") {
       throw new Error("RBAC defaultPolicy must be 'deny' or 'allow'");
     }
+  }
+
+  // Validate global timeout
+  if (gateway.timeout !== undefined && (typeof gateway.timeout !== 'number' || gateway.timeout <= 0)) {
+    throw new Error(
+      `Gateway timeout must be a positive number (got ${gateway.timeout})`
+    );
+  }
+
+  if (rbac) {
 
     // Validate server names in RBAC roles
     for (const [roleName, roleConfig] of Object.entries(rbac.roles)) {

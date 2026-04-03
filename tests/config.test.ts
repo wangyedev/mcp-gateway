@@ -411,6 +411,237 @@ servers:
     const config = loadConfig(configPath);
     expect(config.gateway.auth).toBeUndefined();
   });
+
+  test("parses global timeout", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  timeout: 60
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.timeout).toBe(60);
+  });
+
+  test("parses per-server timeout", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: slow
+    url: http://localhost:3001/mcp
+    timeout: 120
+  - name: fast
+    url: http://localhost:3002/mcp
+    timeout: 10
+`);
+    const config = loadConfig(configPath);
+    expect(config.servers[0].timeout).toBe(120);
+    expect(config.servers[1].timeout).toBe(10);
+  });
+
+  test("allows mixing global and per-server timeouts", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  timeout: 30
+servers:
+  - name: slow
+    url: http://localhost:3001/mcp
+    timeout: 120
+  - name: fast
+    url: http://localhost:3002/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.timeout).toBe(30);
+    expect(config.servers[0].timeout).toBe(120);
+    expect(config.servers[1].timeout).toBeUndefined();
+  });
+
+  test("throws when timeout is not a number", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  timeout: "thirty"
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("timeout must be a positive number");
+  });
+
+  test("throws when timeout is zero", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  timeout: 0
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("timeout must be a positive number");
+  });
+
+  test("throws when timeout is negative", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+    timeout: -10
+`);
+    expect(() => loadConfig(configPath)).toThrow("invalid timeout");
+  });
+
+  test("timeout is optional - no timeout specified", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.timeout).toBeUndefined();
+    expect(config.servers[0].timeout).toBeUndefined();
+  });
+
+  test("parses rate limit config when enabled", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+    maxRequests: 100
+    windowSeconds: 60
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.rateLimit?.enabled).toBe(true);
+    expect(config.gateway.rateLimit?.maxRequests).toBe(100);
+    expect(config.gateway.rateLimit?.windowSeconds).toBe(60);
+  });
+
+  test("rate limit disabled by default", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.rateLimit).toBeUndefined();
+  });
+
+  test("rate limit config with enabled false", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: false
+    maxRequests: 100
+    windowSeconds: 60
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.rateLimit?.enabled).toBe(false);
+  });
+
+  test("uses default values for rate limit when not specified", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.rateLimit?.enabled).toBe(true);
+    expect(config.gateway.rateLimit?.maxRequests).toBe(100);
+    expect(config.gateway.rateLimit?.windowSeconds).toBe(60);
+  });
+
+  test("throws when rate limit maxRequests is zero", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+    maxRequests: 0
+    windowSeconds: 60
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("maxRequests must be a positive number");
+  });
+
+  test("throws when rate limit maxRequests is negative", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+    maxRequests: -10
+    windowSeconds: 60
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("maxRequests must be a positive number");
+  });
+
+  test("throws when rate limit windowSeconds is zero", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+    maxRequests: 100
+    windowSeconds: 0
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("windowSeconds must be a positive number");
+  });
+
+  test("throws when rate limit windowSeconds is negative", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: true
+    maxRequests: 100
+    windowSeconds: -30
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("windowSeconds must be a positive number");
+  });
+
+  test("allows invalid rate limit values when disabled", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  rateLimit:
+    enabled: false
+    maxRequests: 0
+    windowSeconds: 0
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.rateLimit?.enabled).toBe(false);
+  });
 });
 
 describe("parseCommand", () => {

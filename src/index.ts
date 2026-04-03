@@ -11,6 +11,7 @@ import { createLogger } from "./logger.js";
 import { MetricsRegistry } from "./metrics.js";
 import { createAuthMiddleware } from "./auth.js";
 import { createPolicyEvaluator } from "./rbac.js";
+import { RateLimiter } from "./rate-limiter.js";
 
 const CONFIG_PATH = process.env.MCP_GATEWAY_CONFIG ?? "mcp-gateway.yaml";
 const RETRY_INTERVAL_MS = 30_000;
@@ -25,8 +26,10 @@ interface UnavailableEntry {
     args: string[];
     env?: Record<string, string>;
     cwd?: string;
+    timeoutMs?: number;
   };
   retryCount: number;
+  timeoutMs?: number;
 }
 
 async function main(): Promise<void> {
@@ -62,6 +65,14 @@ async function main(): Promise<void> {
   metrics.defineCounter(
     "gateway_errors_total",
     "Error counts by type"
+  );
+  metrics.defineCounter(
+    "gateway_tool_call_timeouts_total",
+    "Total tool call timeouts"
+  );
+  metrics.defineCounter(
+    "gateway_rate_limited_total",
+    "Requests rejected due to rate limiting"
   );
 
   logger.info("Loading config", { path: CONFIG_PATH });
@@ -117,10 +128,15 @@ async function main(): Promise<void> {
     tools: import("./registry.js").ToolDefinition[];
     entry: UnavailableEntry;
   }> {
+    // Resolve timeout: server-specific > global default > 30s
+    const timeoutSec = serverConfig.timeout ?? config.gateway.timeout ?? 30;
+    const timeoutMs = timeoutSec * 1000;
+
     if (serverConfig.url) {
       const tools = await backendManager.connect(
         serverConfig.name,
-        serverConfig.url
+        serverConfig.url,
+        timeoutMs
       );
       return {
         tools,
@@ -138,6 +154,7 @@ async function main(): Promise<void> {
         args: parsed.args,
         env: serverConfig.env,
         cwd: serverConfig.cwd,
+        timeoutMs,
       };
       const tools = await backendManager.connectStdio(
         serverConfig.name,
@@ -220,11 +237,14 @@ async function main(): Promise<void> {
         type: "connection",
       });
       registry.markUnavailable(serverConfig.name);
+      const timeoutSec = serverConfig.timeout ?? config.gateway.timeout ?? 30;
+      const timeoutMs = timeoutSec * 1000;
       if (serverConfig.url) {
         unavailable.push({
           name: serverConfig.name,
           type: "http",
           url: serverConfig.url,
+          timeoutMs,
           retryCount: 0,
         });
       } else {
@@ -237,6 +257,7 @@ async function main(): Promise<void> {
             args: parsed.args,
             env: serverConfig.env,
             cwd: serverConfig.cwd,
+            timeoutMs,
           },
           retryCount: 0,
         });
@@ -247,6 +268,21 @@ async function main(): Promise<void> {
   // Create auth middleware and policy evaluator
   const authMiddleware = createAuthMiddleware(config.gateway.auth);
   const policyEvaluator = createPolicyEvaluator(config.rbac);
+
+  // Create rate limiter if enabled
+  let rateLimiter: RateLimiter | undefined;
+  if (config.gateway.rateLimit?.enabled) {
+    rateLimiter = new RateLimiter(
+      config.gateway.rateLimit.maxRequests,
+      config.gateway.rateLimit.windowSeconds
+    );
+    logger.info("Rate limiting enabled", {
+      maxRequests: config.gateway.rateLimit.maxRequests,
+      windowSeconds: config.gateway.rateLimit.windowSeconds,
+    });
+  } else {
+    logger.info("Rate limiting disabled");
+  }
 
   // Log auth and RBAC status
   const authType = config.gateway.auth?.type ?? "none";
@@ -273,6 +309,7 @@ async function main(): Promise<void> {
     metrics,
     authMiddleware,
     policyEvaluator,
+    rateLimiter,
   });
 
   let retryInterval: ReturnType<typeof setInterval> | null = null;
@@ -295,7 +332,7 @@ async function main(): Promise<void> {
         try {
           let tools: import("./registry.js").ToolDefinition[];
           if (entry.type === "http") {
-            tools = await backendManager.connect(entry.name, entry.url!);
+            tools = await backendManager.connect(entry.name, entry.url!, entry.timeoutMs);
           } else {
             tools = await backendManager.connectStdio(
               entry.name,

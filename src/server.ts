@@ -7,6 +7,7 @@ import { ToolSchema } from "./registry.js";
 import { Logger } from "./logger.js";
 import { MetricsRegistry } from "./metrics.js";
 import { PolicyEvaluator } from "./rbac.js";
+import { RateLimiter } from "./rate-limiter.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -43,6 +44,7 @@ interface GatewayServerOptions {
   metrics?: MetricsRegistry;
   policyEvaluator?: PolicyEvaluator;
   authMiddleware?: RequestHandler[];
+  rateLimiter?: RateLimiter;
 }
 
 const DEFAULT_MAX_SESSIONS = 100;
@@ -71,6 +73,7 @@ export class GatewayServer {
   private metrics?: MetricsRegistry;
   private policyEvaluator?: PolicyEvaluator;
   private authMiddleware?: RequestHandler[];
+  private rateLimiter?: RateLimiter;
 
   // MCP protocol state
   private httpServer: HttpServer | null = null;
@@ -90,6 +93,7 @@ export class GatewayServer {
     this.metrics = options.metrics;
     this.policyEvaluator = options.policyEvaluator;
     this.authMiddleware = options.authMiddleware;
+    this.rateLimiter = options.rateLimiter;
   }
 
   getToolsForSession(sessionId: string): ToolDefinitionOutput[] {
@@ -171,6 +175,24 @@ export class GatewayServer {
         return result;
       }
 
+      // Check rate limit for non-meta-tool calls
+      if (this.rateLimiter && !this.rateLimiter.tryAcquire(sessionId)) {
+        const dotIdx = toolName.indexOf(".");
+        if (dotIdx > 0) {
+          const server = toolName.substring(0, dotIdx);
+          this.metrics?.incrementCounter("gateway_rate_limited_total", { server });
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Rate limit exceeded. Please try again later.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
       if (!this.sessions.isToolActivated(sessionId, toolName)) {
         return {
           content: [
@@ -245,6 +267,14 @@ export class GatewayServer {
           server,
           type: "tool_call",
         });
+
+        // Track timeout errors specifically
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (errorMsg.includes("timed out after")) {
+          this.metrics?.incrementCounter("gateway_tool_call_timeouts_total", {
+            server,
+          });
+        }
       }
 
       return {
@@ -528,6 +558,7 @@ export class GatewayServer {
         this.mcpSessions.delete(sid);
         this.sessions.removeSession(gatewaySessionId);
         this.sessionRoles.delete(gatewaySessionId);
+        this.rateLimiter?.removeSession(gatewaySessionId);
         this.metrics?.setGauge("gateway_active_sessions", this.mcpSessions.size);
       }
     };
