@@ -322,7 +322,8 @@ async function main(): Promise<void> {
       // Add new servers
       for (const sc of newConfig.servers) {
         if (!oldNames.has(sc.name)) {
-          console.log(`Adding backend '${sc.name}' at ${sc.url}`);
+          const label = sc.url ?? sc.command;
+          console.log(`Adding backend '${sc.name}' (${label})`);
           try {
             const { tools, entry } = await connectServer(sc);
             registry.registerServer(sc.name, {
