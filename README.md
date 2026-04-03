@@ -74,6 +74,8 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 - **Session isolation** -- Each client session has its own set of activated tools.
 - **Admin status endpoint** -- `GET /status` returns structured JSON with server health, tools, and active session count.
 - **Session limits** -- Configurable max sessions (default 100) to prevent resource exhaustion.
+- **Structured logging** -- JSON or human-readable output with levels, controlled by `LOG_LEVEL` and `LOG_FORMAT` environment variables.
+- **Prometheus metrics** -- `GET /metrics` exposes tool call counts, latency histograms, error rates, and active sessions in Prometheus text format.
 
 ## Configuration
 
@@ -97,6 +99,8 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 | Variable | Description |
 |----------|-------------|
 | `MCP_GATEWAY_CONFIG` | Path to config file (default: `mcp-gateway.yaml`) |
+| `LOG_LEVEL` | Minimum log level: `debug`, `info` (default), `warn`, `error` |
+| `LOG_FORMAT` | Log output format: `pretty` (default) or `json` |
 
 ## API
 
@@ -115,6 +119,7 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 | `GET /mcp` | SSE endpoint for server-to-client notifications |
 | `DELETE /mcp` | Session cleanup |
 | `GET /status` | Server health and active sessions (JSON) |
+| `GET /metrics` | Prometheus-format metrics |
 
 ### Status Response
 
