@@ -16,14 +16,33 @@ export interface ServerConfig {
   tools?: ToolPolicyConfig;
 }
 
+export interface AuthConfig {
+  type: "none" | "proxy" | "builtin";
+  issuer?: string;
+  rolesClaim?: string;
+  audience?: string;
+  publicEndpoints?: string[];
+}
+
+export interface RbacRole {
+  servers: "*" | string[];
+}
+
+export interface RbacConfig {
+  defaultPolicy: "deny" | "allow";
+  roles: Record<string, RbacRole>;
+}
+
 export interface GatewayConfig {
   port: number;
   host: string;
+  auth?: AuthConfig;
 }
 
 export interface Config {
   gateway: GatewayConfig;
   servers: ServerConfig[];
+  rbac?: RbacConfig;
 }
 
 export function loadConfig(filePath: string): Config {
@@ -31,9 +50,28 @@ export function loadConfig(filePath: string): Config {
   const parsed = parse(raw);
   const substituted = substituteEnvVarsInObject(parsed);
 
+  // Parse auth config
+  let auth: AuthConfig | undefined;
+  if (substituted?.gateway?.auth) {
+    const authConfig = substituted.gateway.auth;
+    auth = {
+      type: authConfig.type ?? "none",
+      issuer: authConfig.issuer,
+      rolesClaim: authConfig.rolesClaim,
+      audience: authConfig.audience,
+      publicEndpoints: authConfig.publicEndpoints,
+    };
+
+    // Validate auth config
+    if (auth.type === "proxy" && !auth.issuer) {
+      throw new Error("Auth type 'proxy' requires 'issuer' field");
+    }
+  }
+
   const gateway: GatewayConfig = {
     port: substituted?.gateway?.port ?? 8080,
     host: substituted?.gateway?.host ?? "0.0.0.0",
+    auth,
   };
 
   const servers: ServerConfig[] = substituted?.servers;
@@ -84,7 +122,35 @@ export function loadConfig(filePath: string): Config {
     names.add(server.name);
   }
 
-  return { gateway, servers };
+  // Parse RBAC config
+  let rbac: RbacConfig | undefined;
+  if (substituted?.rbac) {
+    const rbacConfig = substituted.rbac;
+    rbac = {
+      defaultPolicy: rbacConfig.defaultPolicy ?? "deny",
+      roles: rbacConfig.roles ?? {},
+    };
+
+    // Validate RBAC config
+    if (rbac.defaultPolicy !== "deny" && rbac.defaultPolicy !== "allow") {
+      throw new Error("RBAC defaultPolicy must be 'deny' or 'allow'");
+    }
+
+    // Validate server names in RBAC roles
+    for (const [roleName, roleConfig] of Object.entries(rbac.roles)) {
+      if (roleConfig.servers !== "*" && Array.isArray(roleConfig.servers)) {
+        for (const serverName of roleConfig.servers) {
+          if (!names.has(serverName)) {
+            console.warn(
+              `Warning: Role '${roleName}' references server '${serverName}' which is not in config`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return { gateway, servers, rbac };
 }
 
 function substituteEnvVarsInObject(obj: any): any {

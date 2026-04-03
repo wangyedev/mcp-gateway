@@ -6,6 +6,7 @@ import { Router } from "./router.js";
 import { ToolSchema } from "./registry.js";
 import { Logger } from "./logger.js";
 import { MetricsRegistry } from "./metrics.js";
+import { PolicyEvaluator } from "./rbac.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -16,6 +17,7 @@ import {
 import { randomUUID } from "crypto";
 import express from "express";
 import type { Server as HttpServer } from "http";
+import type { RequestHandler } from "express";
 
 interface ToolDefinitionOutput {
   name: string;
@@ -39,6 +41,8 @@ interface GatewayServerOptions {
   maxSessions?: number;
   logger?: Logger;
   metrics?: MetricsRegistry;
+  policyEvaluator?: PolicyEvaluator;
+  authMiddleware?: RequestHandler[];
 }
 
 const DEFAULT_MAX_SESSIONS = 100;
@@ -48,6 +52,7 @@ interface McpSessionState {
   gatewaySessionId: string;
   transport: StreamableHTTPServerTransport;
   mcpServer: Server;
+  roles?: string[];
 }
 
 const META_TOOL_NAMES = new Set([
@@ -64,11 +69,15 @@ export class GatewayServer {
   private maxSessions: number;
   private logger?: Logger;
   private metrics?: MetricsRegistry;
+  private policyEvaluator?: PolicyEvaluator;
+  private authMiddleware?: RequestHandler[];
 
   // MCP protocol state
   private httpServer: HttpServer | null = null;
   // Maps transport session ID -> McpSessionState
   private mcpSessions = new Map<string, McpSessionState>();
+  // Maps gateway session ID -> roles
+  private sessionRoles = new Map<string, string[]>();
 
   constructor(options: GatewayServerOptions) {
     this.registry = options.registry;
@@ -79,11 +88,27 @@ export class GatewayServer {
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.logger = options.logger;
     this.metrics = options.metrics;
+    this.policyEvaluator = options.policyEvaluator;
+    this.authMiddleware = options.authMiddleware;
   }
 
   getToolsForSession(sessionId: string): ToolDefinitionOutput[] {
     const metaToolDefs = this.metaTools.getToolDefinitions();
-    const activatedDefs = this.metaTools.getActivatedToolDefinitions(sessionId);
+    let activatedDefs = this.metaTools.getActivatedToolDefinitions(sessionId);
+
+    // Filter tools based on RBAC
+    if (this.policyEvaluator) {
+      const roles = this.sessionRoles.get(sessionId) ?? [];
+      activatedDefs = activatedDefs.filter((tool) => {
+        const dotIdx = tool.name.indexOf(".");
+        if (dotIdx > 0) {
+          const serverName = tool.name.substring(0, dotIdx);
+          return this.policyEvaluator!.canAccessServer(roles, serverName);
+        }
+        return true;
+      });
+    }
+
     return [...metaToolDefs, ...activatedDefs];
   }
 
@@ -95,6 +120,27 @@ export class GatewayServer {
     const startTime = Date.now();
     try {
       if (META_TOOL_NAMES.has(toolName)) {
+        // Check RBAC for activate_tool
+        if (toolName === "activate_tool" && this.policyEvaluator) {
+          const name = args.name as string;
+          const dotIdx = name?.indexOf(".");
+          if (dotIdx > 0) {
+            const serverName = name.substring(0, dotIdx);
+            const roles = this.sessionRoles.get(sessionId) ?? [];
+            if (!this.policyEvaluator.canAccessServer(roles, serverName)) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Access denied: insufficient permissions for server '${serverName}'`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+          }
+        }
+
         const result = this.handleMetaToolCall(sessionId, toolName, args);
 
         // Track activations/deactivations
@@ -135,6 +181,26 @@ export class GatewayServer {
           ],
           isError: true,
         };
+      }
+
+      // Check RBAC for regular tool calls
+      if (this.policyEvaluator) {
+        const roles = this.sessionRoles.get(sessionId) ?? [];
+        const dotIdx = toolName.indexOf(".");
+        if (dotIdx > 0) {
+          const serverName = toolName.substring(0, dotIdx);
+          if (!this.policyEvaluator.canAccessServer(roles, serverName)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Access denied: insufficient permissions for server '${serverName}'`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
       }
 
       const result = await this.router.routeToolCall(toolName, args);
@@ -224,6 +290,13 @@ export class GatewayServer {
   async startMcp(port: number, host: string): Promise<number> {
     const app = express();
     app.use(express.json());
+
+    // Apply auth middleware before routes
+    if (this.authMiddleware) {
+      for (const mw of this.authMiddleware) {
+        app.use(mw);
+      }
+    }
 
     // GET /status -- returns server status and active session count
     app.get("/status", (_req, res) => {
@@ -403,6 +476,10 @@ export class GatewayServer {
     const gatewaySessionId = this.sessions.createSession();
     this.metrics?.setGauge("gateway_active_sessions", this.mcpSessions.size + 1);
 
+    // Extract and store roles from auth middleware
+    const roles = req.authRoles ?? [];
+    this.sessionRoles.set(gatewaySessionId, roles);
+
     // Create per-session low-level MCP server with tools capability
     const mcpServer = new Server(
       { name: "mcp-gateway", version: "0.1.0" },
@@ -450,6 +527,7 @@ export class GatewayServer {
       if (sid) {
         this.mcpSessions.delete(sid);
         this.sessions.removeSession(gatewaySessionId);
+        this.sessionRoles.delete(gatewaySessionId);
         this.metrics?.setGauge("gateway_active_sessions", this.mcpSessions.size);
       }
     };

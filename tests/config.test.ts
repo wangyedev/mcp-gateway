@@ -344,6 +344,73 @@ servers:
     const config = loadConfig(configPath);
     expect(config.servers[0].tools).toBeUndefined();
   });
+
+  test("parses auth config", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  auth:
+    type: proxy
+    issuer: https://auth.example.com
+    rolesClaim: realm_access.roles
+    publicEndpoints:
+      - /status
+      - /metrics
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.auth?.type).toBe("proxy");
+    expect(config.gateway.auth?.issuer).toBe("https://auth.example.com");
+    expect(config.gateway.auth?.rolesClaim).toBe("realm_access.roles");
+    expect(config.gateway.auth?.publicEndpoints).toEqual(["/status", "/metrics"]);
+  });
+
+  test("parses rbac config", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+rbac:
+  defaultPolicy: deny
+  roles:
+    admin:
+      servers: "*"
+    analyst:
+      servers:
+        - postgres
+`);
+    const config = loadConfig(configPath);
+    expect(config.rbac?.defaultPolicy).toBe("deny");
+    expect(config.rbac?.roles.admin.servers).toBe("*");
+    expect(config.rbac?.roles.analyst.servers).toEqual(["postgres"]);
+  });
+
+  test("throws when proxy auth missing issuer", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+gateway:
+  auth:
+    type: proxy
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    expect(() => loadConfig(configPath)).toThrow("issuer");
+  });
+
+  test("default auth type is none", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: test
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.gateway.auth).toBeUndefined();
+  });
 });
 
 describe("parseCommand", () => {

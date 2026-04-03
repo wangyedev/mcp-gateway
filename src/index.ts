@@ -9,6 +9,8 @@ import { GatewayServer } from "./server.js";
 import { ConfigWatcher } from "./watcher.js";
 import { createLogger } from "./logger.js";
 import { MetricsRegistry } from "./metrics.js";
+import { createAuthMiddleware } from "./auth.js";
+import { createPolicyEvaluator } from "./rbac.js";
 
 const CONFIG_PATH = process.env.MCP_GATEWAY_CONFIG ?? "mcp-gateway.yaml";
 const RETRY_INTERVAL_MS = 30_000;
@@ -242,6 +244,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // Create auth middleware and policy evaluator
+  const authMiddleware = createAuthMiddleware(config.gateway.auth);
+  const policyEvaluator = createPolicyEvaluator(config.rbac);
+
+  // Log auth and RBAC status
+  const authType = config.gateway.auth?.type ?? "none";
+  logger.info("Auth configuration", { mode: authType });
+  if (config.rbac) {
+    logger.info("RBAC enabled", {
+      defaultPolicy: config.rbac.defaultPolicy,
+      roles: Object.keys(config.rbac.roles).length,
+    });
+  } else {
+    logger.info("RBAC disabled");
+  }
+
   const serverUrls = new Map(
     config.servers.filter((s) => s.url).map((s) => [s.name, s.url!])
   );
@@ -253,6 +271,8 @@ async function main(): Promise<void> {
     serverUrls,
     logger,
     metrics,
+    authMiddleware,
+    policyEvaluator,
   });
 
   let retryInterval: ReturnType<typeof setInterval> | null = null;
