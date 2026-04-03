@@ -19,15 +19,15 @@ export interface Config {
 
 export function loadConfig(filePath: string): Config {
   const raw = readFileSync(filePath, "utf-8");
-  const substituted = substituteEnvVars(raw);
-  const parsed = parse(substituted);
+  const parsed = parse(raw);
+  const substituted = substituteEnvVarsInObject(parsed);
 
   const gateway: GatewayConfig = {
-    port: parsed?.gateway?.port ?? 8080,
-    host: parsed?.gateway?.host ?? "0.0.0.0",
+    port: substituted?.gateway?.port ?? 8080,
+    host: substituted?.gateway?.host ?? "0.0.0.0",
   };
 
-  const servers: ServerConfig[] = parsed?.servers;
+  const servers: ServerConfig[] = substituted?.servers;
   if (!servers || !Array.isArray(servers) || servers.length === 0) {
     throw new Error("Config must include at least one server in 'servers' array");
   }
@@ -46,15 +46,25 @@ export function loadConfig(filePath: string): Config {
   return { gateway, servers };
 }
 
-function substituteEnvVars(content: string): string {
-  return content.replace(/\$\{(\w+)\}/g, (match, varName) => {
-    const value = process.env[varName];
-    if (value === undefined) {
-      throw new Error(
-        `Environment variable '${varName}' is not set. ` +
-          `Referenced in config as \${${varName}}`
-      );
+function substituteEnvVarsInObject(obj: any): any {
+  if (typeof obj === 'string') {
+    return obj.replace(/\$\{(\w+)\}/g, (match, varName) => {
+      const value = process.env[varName];
+      if (value === undefined) {
+        throw new Error(`Environment variable '${varName}' is not set. Referenced in config as \${${varName}}`);
+      }
+      return value;
+    });
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => substituteEnvVarsInObject(item));
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = substituteEnvVarsInObject(value);
     }
-    return value;
-  });
+    return result;
+  }
+  return obj;
 }

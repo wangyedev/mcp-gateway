@@ -33,7 +33,11 @@ interface GatewayServerOptions {
   sessions: SessionManager;
   metaTools: MetaToolHandler;
   router: Router;
+  serverUrls?: Map<string, string>;
+  maxSessions?: number;
 }
+
+const DEFAULT_MAX_SESSIONS = 100;
 
 // Internal state for a connected MCP session
 interface McpSessionState {
@@ -52,6 +56,8 @@ export class GatewayServer {
   private sessions: SessionManager;
   private metaTools: MetaToolHandler;
   private router: Router;
+  private serverUrls: Map<string, string>;
+  private maxSessions: number;
 
   // MCP protocol state
   private httpServer: HttpServer | null = null;
@@ -63,6 +69,8 @@ export class GatewayServer {
     this.sessions = options.sessions;
     this.metaTools = options.metaTools;
     this.router = options.router;
+    this.serverUrls = options.serverUrls ?? new Map();
+    this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
   }
 
   getToolsForSession(sessionId: string): ToolDefinitionOutput[] {
@@ -154,6 +162,7 @@ export class GatewayServer {
     app.get("/status", (_req, res) => {
       const servers = this.registry.listServers().map((s) => ({
         name: s.name,
+        url: this.serverUrls?.get(s.name) ?? "unknown",
         status: s.status,
         tools: this.registry.getToolNamesForServer(s.name),
       }));
@@ -260,6 +269,19 @@ export class GatewayServer {
     await Promise.all(promises);
   }
 
+  /**
+   * Sends notifications/tools/list_changed to ALL active sessions.
+   */
+  async notifyAllSessions(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [, state] of this.mcpSessions) {
+      promises.push(
+        state.mcpServer.sendToolListChanged().catch(() => {})
+      );
+    }
+    await Promise.all(promises);
+  }
+
   async stop(): Promise<void> {
     // Close all MCP transports
     const closePromises: Promise<void>[] = [];
@@ -288,6 +310,12 @@ export class GatewayServer {
     req: express.Request,
     res: express.Response
   ): Promise<void> {
+    // Enforce session limit
+    if (this.mcpSessions.size >= this.maxSessions) {
+      res.status(503).json({ error: "Too many active sessions" });
+      return;
+    }
+
     // Check client capabilities for tools.listChanged support
     const clientCapabilities = req.body?.params?.capabilities;
     if (!clientCapabilities?.tools?.listChanged) {

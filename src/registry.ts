@@ -53,8 +53,9 @@ export class ToolRegistry {
   }
 
   markUnavailable(name: string): void {
+    const existing = this.servers.get(name);
     this.servers.set(name, {
-      description: undefined,
+      description: existing?.description,
       status: "unavailable",
       tools: [],
     });

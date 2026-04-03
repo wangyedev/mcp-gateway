@@ -21,6 +21,40 @@ async function main(): Promise<void> {
   const backendManager = new BackendManager();
   const router = new Router(registry, backendManager);
 
+  // Will be assigned after GatewayServer is created; the subscribeToToolChanges
+  // closure captures the variable, not the value.
+  let server: GatewayServer;
+
+  /**
+   * Extracted helper: subscribes to tools/list_changed from a backend and
+   * refreshes the registry + notifies ALL sessions on any change.
+   */
+  function subscribeToToolChanges(
+    serverName: string,
+    getDescription: () => string | undefined
+  ) {
+    backendManager.onToolsChanged(serverName, async () => {
+      console.log(`Backend '${serverName}' tools changed, refreshing...`);
+      try {
+        const newTools = await backendManager.refreshTools(serverName);
+        const oldToolNames = registry.getToolNamesForServer(serverName);
+        registry.removeServer(serverName);
+        registry.registerServer(serverName, {
+          description: getDescription(),
+          tools: newTools,
+        });
+        const newToolNames = new Set(registry.getToolNamesForServer(serverName));
+        const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
+        if (removedTools.length > 0) {
+          sessions.deactivateServerToolsFromAll(removedTools);
+        }
+        await server.notifyAllSessions();
+      } catch (error) {
+        console.error(`Failed to refresh tools for '${serverName}':`, error);
+      }
+    });
+  }
+
   // Connect to backends
   const unavailable: Array<{ name: string; url: string }> = [];
   for (const serverConfig of config.servers) {
@@ -36,28 +70,10 @@ async function main(): Promise<void> {
       );
 
       // Subscribe to tools/list_changed from backend
-      backendManager.onToolsChanged(serverConfig.name, async () => {
-        console.log(`Backend '${serverConfig.name}' tools changed, refreshing...`);
-        try {
-          const newTools = await backendManager.refreshTools(serverConfig.name);
-          const oldToolNames = registry.getToolNamesForServer(serverConfig.name);
-          registry.removeServer(serverConfig.name);
-          registry.registerServer(serverConfig.name, {
-            description: serverConfig.description,
-            tools: newTools,
-          });
-
-          // Check for removed tools and deactivate them
-          const newToolNames = new Set(registry.getToolNamesForServer(serverConfig.name));
-          const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
-          if (removedTools.length > 0) {
-            const affected = sessions.deactivateServerToolsFromAll(removedTools);
-            await server.notifyToolListChangedForSessions(affected);
-          }
-        } catch (error) {
-          console.error(`Failed to refresh tools for '${serverConfig.name}':`, error);
-        }
-      });
+      subscribeToToolChanges(
+        serverConfig.name,
+        () => config.servers.find((s) => s.name === serverConfig.name)?.description
+      );
     } catch (error) {
       console.warn(
         `Failed to connect to '${serverConfig.name}': ${error instanceof Error ? error.message : error}`
@@ -67,7 +83,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const server = new GatewayServer({ registry, sessions, metaTools, router });
+  const serverUrls = new Map(config.servers.map((s) => [s.name, s.url]));
+  server = new GatewayServer({ registry, sessions, metaTools, router, serverUrls });
 
   // Retry unavailable backends
   if (unavailable.length > 0) {
@@ -75,37 +92,21 @@ async function main(): Promise<void> {
       for (let i = unavailable.length - 1; i >= 0; i--) {
         const { name, url } = unavailable[i];
         try {
-          const serverConfig = config.servers.find((s) => s.name === name);
           const tools = await backendManager.connect(name, url);
           registry.removeServer(name);
           registry.registerServer(name, {
-            description: serverConfig?.description,
+            description: config.servers.find((s) => s.name === name)?.description,
             tools,
           });
           // Subscribe to tools/list_changed from backend
-          backendManager.onToolsChanged(name, async () => {
-            console.log(`Backend '${name}' tools changed, refreshing...`);
-            try {
-              const newTools = await backendManager.refreshTools(name);
-              const oldToolNames = registry.getToolNamesForServer(name);
-              registry.removeServer(name);
-              registry.registerServer(name, {
-                description: serverConfig?.description,
-                tools: newTools,
-              });
-              const newToolNames = new Set(registry.getToolNamesForServer(name));
-              const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
-              if (removedTools.length > 0) {
-                const affected = sessions.deactivateServerToolsFromAll(removedTools);
-                await server.notifyToolListChangedForSessions(affected);
-              }
-            } catch (error) {
-              console.error(`Failed to refresh tools for '${name}':`, error);
-            }
-          });
+          subscribeToToolChanges(
+            name,
+            () => config.servers.find((s) => s.name === name)?.description
+          );
 
           unavailable.splice(i, 1);
           console.log(`Reconnected to '${name}' — ${tools.length} tools registered`);
+          await server.notifyAllSessions();
         } catch {
           // Still unavailable, will retry
         }
@@ -130,10 +131,10 @@ async function main(): Promise<void> {
         if (!newNames.has(name)) {
           console.log(`Removing backend '${name}'`);
           const toolNames = registry.getToolNamesForServer(name);
-          const affected = sessions.deactivateServerToolsFromAll(toolNames);
+          sessions.deactivateServerToolsFromAll(toolNames);
           registry.removeServer(name);
           await backendManager.disconnect(name);
-          await server.notifyToolListChangedForSessions(affected);
+          await server.notifyAllSessions();
         }
       }
 
@@ -144,7 +145,7 @@ async function main(): Promise<void> {
           if (oldSc && (oldSc.url !== sc.url || oldSc.description !== sc.description)) {
             console.log(`Backend '${sc.name}' config changed, reconnecting...`);
             const toolNames = registry.getToolNamesForServer(sc.name);
-            const affected = sessions.deactivateServerToolsFromAll(toolNames);
+            sessions.deactivateServerToolsFromAll(toolNames);
             registry.removeServer(sc.name);
             await backendManager.disconnect(sc.name);
             try {
@@ -153,34 +154,16 @@ async function main(): Promise<void> {
                 description: sc.description,
                 tools,
               });
-              backendManager.onToolsChanged(sc.name, async () => {
-                console.log(`Backend '${sc.name}' tools changed, refreshing...`);
-                try {
-                  const newTools = await backendManager.refreshTools(sc.name);
-                  const oldToolNames = registry.getToolNamesForServer(sc.name);
-                  registry.removeServer(sc.name);
-                  registry.registerServer(sc.name, {
-                    description: sc.description,
-                    tools: newTools,
-                  });
-                  const newToolNames = new Set(registry.getToolNamesForServer(sc.name));
-                  const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
-                  if (removedTools.length > 0) {
-                    const aff = sessions.deactivateServerToolsFromAll(removedTools);
-                    await server.notifyToolListChangedForSessions(aff);
-                  }
-                } catch (error) {
-                  console.error(`Failed to refresh tools for '${sc.name}':`, error);
-                }
-              });
+              subscribeToToolChanges(
+                sc.name,
+                () => config.servers.find((s) => s.name === sc.name)?.description
+              );
               console.log(`Reconnected to '${sc.name}' — ${tools.length} tools`);
             } catch (error) {
               console.warn(`Failed to reconnect to '${sc.name}':`, error);
               registry.markUnavailable(sc.name);
             }
-            if (affected.length > 0) {
-              await server.notifyToolListChangedForSessions(affected);
-            }
+            await server.notifyAllSessions();
           }
         }
       }
@@ -197,32 +180,17 @@ async function main(): Promise<void> {
             });
 
             // Subscribe to tools/list_changed from backend
-            backendManager.onToolsChanged(sc.name, async () => {
-              console.log(`Backend '${sc.name}' tools changed, refreshing...`);
-              try {
-                const newTools = await backendManager.refreshTools(sc.name);
-                const oldToolNames = registry.getToolNamesForServer(sc.name);
-                registry.removeServer(sc.name);
-                registry.registerServer(sc.name, {
-                  description: sc.description,
-                  tools: newTools,
-                });
-                const newToolNames = new Set(registry.getToolNamesForServer(sc.name));
-                const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
-                if (removedTools.length > 0) {
-                  const affected = sessions.deactivateServerToolsFromAll(removedTools);
-                  await server.notifyToolListChangedForSessions(affected);
-                }
-              } catch (error) {
-                console.error(`Failed to refresh tools for '${sc.name}':`, error);
-              }
-            });
+            subscribeToToolChanges(
+              sc.name,
+              () => config.servers.find((s) => s.name === sc.name)?.description
+            );
 
             console.log(`Connected to '${sc.name}' — ${tools.length} tools`);
           } catch (error) {
             console.warn(`Failed to connect to '${sc.name}':`, error);
             registry.markUnavailable(sc.name);
           }
+          await server.notifyAllSessions();
         }
       }
 
