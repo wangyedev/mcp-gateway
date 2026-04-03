@@ -52,12 +52,20 @@ export class MetaToolHandler {
     return { success: true };
   }
 
+  // Future enhancement: The MCP protocol supports an `instructions` field in
+  // the initialize response, which clients inject into the LLM's system prompt.
+  // When client support for `instructions` matures, the gateway should set it
+  // dynamically with the server catalog for richer context injection at
+  // connection time. For now, we embed the catalog in the `list_servers` tool
+  // description, which is universally supported and updates via tools/list_changed.
+
   getToolDefinitions(): ToolDefinitionOutput[] {
+    const serverSummary = this.buildServerSummary();
+
     return [
       {
         name: "list_servers",
-        description:
-          "List all available backend MCP servers with their descriptions and status. Call this first to discover what servers are available.",
+        description: serverSummary,
         inputSchema: {
           type: "object",
           properties: {},
@@ -110,6 +118,26 @@ export class MetaToolHandler {
         },
       },
     ];
+  }
+
+  private buildServerSummary(): string {
+    const servers = this.registry.listServers();
+    if (servers.length === 0) {
+      return "List available MCP servers. No servers are currently registered.";
+    }
+
+    const entries = servers.map((s) => {
+      const status = s.status === "available" ? "" : " [offline]";
+      const desc = s.description ? ` - ${s.description}` : "";
+      return `${s.name}${status}${desc}`;
+    });
+
+    return (
+      "List available MCP servers. " +
+      "Current servers: " +
+      entries.join("; ") +
+      ". Call list_server_tools(server) to see tools, then activate_tool(name) to enable one."
+    );
   }
 
   getActivatedToolDefinitions(sessionId: string): ToolDefinitionOutput[] {

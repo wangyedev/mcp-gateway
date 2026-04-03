@@ -115,6 +115,28 @@ describe("MetaToolHandler", () => {
       expect(names).toContain("activate_tool");
       expect(names).toContain("deactivate_tool");
     });
+
+    test("list_servers description includes server catalog", () => {
+      const defs = handler.getToolDefinitions();
+      const listServers = defs.find((d) => d.name === "list_servers")!;
+      expect(listServers.description).toContain("postgres");
+      expect(listServers.description).toContain("Database tools");
+      expect(listServers.description).toContain("list_server_tools");
+    });
+
+    test("list_servers description shows offline servers", () => {
+      registry.markUnavailable("broken");
+      const defs = handler.getToolDefinitions();
+      const listServers = defs.find((d) => d.name === "list_servers")!;
+      expect(listServers.description).toContain("broken [offline]");
+    });
+
+    test("list_servers description handles no servers", () => {
+      registry.removeServer("postgres");
+      const defs = handler.getToolDefinitions();
+      const listServers = defs.find((d) => d.name === "list_servers")!;
+      expect(listServers.description).toContain("No servers are currently registered");
+    });
   });
 
   describe("getActivatedToolDefinitions", () => {
