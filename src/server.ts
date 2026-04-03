@@ -226,11 +226,12 @@ export class GatewayServer {
       await state.transport.handleRequest(req, res);
     });
 
-    return new Promise<number>((resolve) => {
+    return new Promise<number>((resolve, reject) => {
       this.httpServer = app.listen(port, host, () => {
-        const addr = this.httpServer!.address() as { port: number };
-        resolve(addr.port);
+        const addr = this.httpServer!.address();
+        resolve(typeof addr === "object" && addr ? addr.port : port);
       });
+      this.httpServer.on("error", (err) => reject(err));
     });
   }
 
