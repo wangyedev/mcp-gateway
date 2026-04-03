@@ -82,6 +82,28 @@ async function main(): Promise<void> {
             description: serverConfig?.description,
             tools,
           });
+          // Subscribe to tools/list_changed from backend
+          backendManager.onToolsChanged(name, async () => {
+            console.log(`Backend '${name}' tools changed, refreshing...`);
+            try {
+              const newTools = await backendManager.refreshTools(name);
+              const oldToolNames = registry.getToolNamesForServer(name);
+              registry.removeServer(name);
+              registry.registerServer(name, {
+                description: serverConfig?.description,
+                tools: newTools,
+              });
+              const newToolNames = new Set(registry.getToolNamesForServer(name));
+              const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
+              if (removedTools.length > 0) {
+                const affected = sessions.deactivateServerToolsFromAll(removedTools);
+                await server.notifyToolListChangedForSessions(affected);
+              }
+            } catch (error) {
+              console.error(`Failed to refresh tools for '${name}':`, error);
+            }
+          });
+
           unavailable.splice(i, 1);
           console.log(`Reconnected to '${name}' — ${tools.length} tools registered`);
         } catch {
@@ -115,6 +137,54 @@ async function main(): Promise<void> {
         }
       }
 
+      // Detect modified servers (URL or description changed)
+      for (const sc of newConfig.servers) {
+        if (oldNames.has(sc.name) && newNames.has(sc.name)) {
+          const oldSc = config.servers.find((s) => s.name === sc.name);
+          if (oldSc && (oldSc.url !== sc.url || oldSc.description !== sc.description)) {
+            console.log(`Backend '${sc.name}' config changed, reconnecting...`);
+            const toolNames = registry.getToolNamesForServer(sc.name);
+            const affected = sessions.deactivateServerToolsFromAll(toolNames);
+            registry.removeServer(sc.name);
+            await backendManager.disconnect(sc.name);
+            try {
+              const tools = await backendManager.connect(sc.name, sc.url);
+              registry.registerServer(sc.name, {
+                description: sc.description,
+                tools,
+              });
+              backendManager.onToolsChanged(sc.name, async () => {
+                console.log(`Backend '${sc.name}' tools changed, refreshing...`);
+                try {
+                  const newTools = await backendManager.refreshTools(sc.name);
+                  const oldToolNames = registry.getToolNamesForServer(sc.name);
+                  registry.removeServer(sc.name);
+                  registry.registerServer(sc.name, {
+                    description: sc.description,
+                    tools: newTools,
+                  });
+                  const newToolNames = new Set(registry.getToolNamesForServer(sc.name));
+                  const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
+                  if (removedTools.length > 0) {
+                    const aff = sessions.deactivateServerToolsFromAll(removedTools);
+                    await server.notifyToolListChangedForSessions(aff);
+                  }
+                } catch (error) {
+                  console.error(`Failed to refresh tools for '${sc.name}':`, error);
+                }
+              });
+              console.log(`Reconnected to '${sc.name}' — ${tools.length} tools`);
+            } catch (error) {
+              console.warn(`Failed to reconnect to '${sc.name}':`, error);
+              registry.markUnavailable(sc.name);
+            }
+            if (affected.length > 0) {
+              await server.notifyToolListChangedForSessions(affected);
+            }
+          }
+        }
+      }
+
       // Add new servers
       for (const sc of newConfig.servers) {
         if (!oldNames.has(sc.name)) {
@@ -125,6 +195,29 @@ async function main(): Promise<void> {
               description: sc.description,
               tools,
             });
+
+            // Subscribe to tools/list_changed from backend
+            backendManager.onToolsChanged(sc.name, async () => {
+              console.log(`Backend '${sc.name}' tools changed, refreshing...`);
+              try {
+                const newTools = await backendManager.refreshTools(sc.name);
+                const oldToolNames = registry.getToolNamesForServer(sc.name);
+                registry.removeServer(sc.name);
+                registry.registerServer(sc.name, {
+                  description: sc.description,
+                  tools: newTools,
+                });
+                const newToolNames = new Set(registry.getToolNamesForServer(sc.name));
+                const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
+                if (removedTools.length > 0) {
+                  const affected = sessions.deactivateServerToolsFromAll(removedTools);
+                  await server.notifyToolListChangedForSessions(affected);
+                }
+              } catch (error) {
+                console.error(`Failed to refresh tools for '${sc.name}':`, error);
+              }
+            });
+
             console.log(`Connected to '${sc.name}' — ${tools.length} tools`);
           } catch (error) {
             console.warn(`Failed to connect to '${sc.name}':`, error);

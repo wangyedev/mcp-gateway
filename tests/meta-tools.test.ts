@@ -49,14 +49,14 @@ describe("MetaToolHandler", () => {
 
   describe("listServerTools", () => {
     test("returns tools for a server", () => {
-      const result = handler.listServerTools(sessionId, "postgres");
+      const result = handler.listServerTools("postgres");
       expect(result.server).toBe("postgres");
       expect(result.tools).toHaveLength(2);
       expect(result.tools[0].name).toBe("postgres.query");
     });
 
     test("throws for unknown server", () => {
-      expect(() => handler.listServerTools(sessionId, "unknown")).toThrow("not found");
+      expect(() => handler.listServerTools("unknown")).toThrow("not found");
     });
   });
 
@@ -72,6 +72,13 @@ describe("MetaToolHandler", () => {
     test("throws for unknown tool", () => {
       expect(() => handler.activateTool(sessionId, "postgres.unknown")).toThrow(
         "not found"
+      );
+    });
+
+    test("throws unavailable error when server is unavailable", () => {
+      registry.markUnavailable("offline");
+      expect(() => handler.activateTool(sessionId, "offline.some_tool")).toThrow(
+        "currently unavailable"
       );
     });
 

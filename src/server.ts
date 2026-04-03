@@ -84,12 +84,9 @@ export class GatewayServer {
 
         // After activate/deactivate, emit tools/list_changed for the session
         if (toolName === "activate_tool" || toolName === "deactivate_tool") {
-          const transportSessionIds = this.getTransportSessionIds(sessionId);
-          if (transportSessionIds.length > 0) {
-            this.notifyToolListChangedForSessions(transportSessionIds).catch(
-              () => {}
-            );
-          }
+          this.notifyToolListChangedForSessions([sessionId]).catch(
+            () => {}
+          );
         }
 
         return result;
@@ -135,7 +132,7 @@ export class GatewayServer {
         result = this.metaTools.listServers();
         break;
       case "list_server_tools":
-        result = this.metaTools.listServerTools(sessionId, args.server as string);
+        result = this.metaTools.listServerTools(args.server as string);
         break;
       case "activate_tool":
         result = this.metaTools.activateTool(sessionId, args.name as string);
@@ -240,15 +237,15 @@ export class GatewayServer {
   }
 
   /**
-   * Sends notifications/tools/list_changed to specified transport session IDs.
+   * Sends notifications/tools/list_changed to sessions matching the given gateway session IDs.
    */
   async notifyToolListChangedForSessions(
-    sessionIds: string[]
+    gatewaySessionIds: string[]
   ): Promise<void> {
+    const idSet = new Set(gatewaySessionIds);
     const promises: Promise<void>[] = [];
-    for (const sid of sessionIds) {
-      const state = this.mcpSessions.get(sid);
-      if (state) {
+    for (const [, state] of this.mcpSessions) {
+      if (idSet.has(state.gatewaySessionId)) {
         promises.push(
           state.mcpServer.sendToolListChanged().catch(() => {})
         );
@@ -285,6 +282,15 @@ export class GatewayServer {
     req: express.Request,
     res: express.Response
   ): Promise<void> {
+    // Check client capabilities for tools.listChanged support
+    const clientCapabilities = req.body?.params?.capabilities;
+    if (!clientCapabilities?.tools?.listChanged) {
+      console.warn(
+        "Client does not declare tools.listChanged capability. " +
+          "Tool list change notifications may not be handled by this client."
+      );
+    }
+
     // Create gateway-level session
     const gatewaySessionId = this.sessions.createSession();
 
@@ -345,16 +351,4 @@ export class GatewayServer {
     await transport.handleRequest(req, res, req.body);
   }
 
-  /**
-   * Returns all transport session IDs associated with a gateway session ID.
-   */
-  private getTransportSessionIds(gatewaySessionId: string): string[] {
-    const result: string[] = [];
-    for (const [transportId, state] of this.mcpSessions) {
-      if (state.gatewaySessionId === gatewaySessionId) {
-        result.push(transportId);
-      }
-    }
-    return result;
-  }
 }

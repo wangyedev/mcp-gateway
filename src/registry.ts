@@ -112,6 +112,15 @@ export class ToolRegistry {
     };
   }
 
+  isServerUnavailable(namespacedName: string): boolean {
+    const dotIndex = namespacedName.indexOf(".");
+    if (dotIndex === -1) return false;
+
+    const serverName = namespacedName.substring(0, dotIndex);
+    const entry = this.servers.get(serverName);
+    return entry?.status === "unavailable";
+  }
+
   getToolNamesForServer(serverName: string): string[] {
     const entry = this.servers.get(serverName);
     if (!entry) return [];

@@ -19,7 +19,6 @@ export class MetaToolHandler {
   }
 
   listServerTools(
-    sessionId: string,
     serverName: string
   ): { server: string; tools: Array<{ name: string; description: string }> } {
     const tools = this.registry.listServerTools(serverName);
@@ -32,6 +31,9 @@ export class MetaToolHandler {
   ): { success: true; tool: ToolDefinitionOutput } {
     const tool = this.registry.getTool(toolName);
     if (!tool) {
+      if (this.registry.isServerUnavailable(toolName)) {
+        throw new Error(`Server for tool '${toolName}' is currently unavailable`);
+      }
       throw new Error(`Tool '${toolName}' not found`);
     }
     this.sessions.activateTool(sessionId, toolName);

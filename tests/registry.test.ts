@@ -132,6 +132,32 @@ describe("ToolRegistry", () => {
     expect(() => registry.listServerTools("postgres")).toThrow("unavailable");
   });
 
+  test("isServerUnavailable returns true for unavailable server", () => {
+    registry.markUnavailable("postgres");
+    expect(registry.isServerUnavailable("postgres.query")).toBe(true);
+  });
+
+  test("isServerUnavailable returns false for available server", () => {
+    registry.registerServer("postgres", {
+      tools: [
+        {
+          name: "query",
+          description: "Execute SQL",
+          inputSchema: { type: "object" as const, properties: {} },
+        },
+      ],
+    });
+    expect(registry.isServerUnavailable("postgres.query")).toBe(false);
+  });
+
+  test("isServerUnavailable returns false for unknown server", () => {
+    expect(registry.isServerUnavailable("unknown.tool")).toBe(false);
+  });
+
+  test("isServerUnavailable returns false for name without dot", () => {
+    expect(registry.isServerUnavailable("nodot")).toBe(false);
+  });
+
   test("removes a server", () => {
     registry.registerServer("postgres", {
       tools: [
