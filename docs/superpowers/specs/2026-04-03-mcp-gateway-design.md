@@ -28,7 +28,7 @@ The gateway is a lightweight router. It holds metadata in memory, exposes meta-t
 
 ### Internal Components
 
-**Meta-Tool Handler** — Implements the 4 meta-tools (`list_servers`, `list_server_tools`, `activate_tool`, `deactivate_tool`). Reads from Tool Registry, writes to Session Manager.
+**Meta-Tool Handler** — Implements the 2 meta-tools (`activate_tool`, `deactivate_tool`). Builds a flat tool catalog (all tool names and descriptions across all servers) embedded in the `activate_tool` description, matching the agent skills pattern. Reads from Tool Registry, writes to Session Manager.
 
 **Tool Registry** — In-memory index of all tools from all backend servers. Stores server metadata (name, description), tool metadata (name, description), and full tool schemas. Built at startup by connecting to each backend and calling `tools/list`. Rebuilt on config reload or when a backend emits `tools/list_changed`.
 
@@ -51,60 +51,22 @@ Backend `tools/list_changed` → [Tool Registry] (refresh cache)
 
 ## Meta-Tools
 
-The gateway exposes exactly 4 tools to every client session. These are always present and cannot be deactivated.
-
-### `list_servers()`
-
-Returns all registered backend servers with descriptions and availability status.
-
-**Parameters:** None
-
-**Response:**
-```json
-{
-  "servers": [
-    {
-      "name": "postgres",
-      "description": "Execute SQL queries, list and describe tables",
-      "status": "available"
-    },
-    {
-      "name": "github",
-      "description": "Manage repos, PRs, issues, and code search",
-      "status": "unavailable"
-    }
-  ]
-}
-```
-
-**Status values:** `available` (connected and tools fetched), `unavailable` (cannot reach backend, retrying).
-
-**Description source:** If the admin provides a `description` in config, use that. Otherwise, auto-generate from the server's tool descriptions using the template: `"Provides tools: {tool1_name} - {tool1_desc}, {tool2_name} - {tool2_desc}, ..."`. Truncate at a word boundary with trailing ellipsis if longer than 200 characters.
-
-### `list_server_tools(server)`
-
-Returns tool names and descriptions for a specific server.
-
-**Parameters:**
-- `server` (string, required) — Server name from `list_servers()`
-
-**Response:**
-```json
-{
-  "server": "postgres",
-  "tools": [
-    { "name": "postgres.query", "description": "Execute SQL against PostgreSQL" },
-    { "name": "postgres.list_tables", "description": "List all tables in a database" },
-    { "name": "postgres.describe_table", "description": "Get column info for a table" }
-  ]
-}
-```
-
-**Error:** Returns an error if the server name is not found.
+The gateway exposes exactly 2 tools to every client session. These are always present and cannot be deactivated. This follows the agent skills pattern: discovery via description, activation via tool call.
 
 ### `activate_tool(name)`
 
 Activates a tool for the current session. The tool appears in the client's `tools/list` response.
+
+**Description:** Dynamic — contains a flat catalog of ALL tools across all servers. Format:
+```
+Activate a tool for use in this session. Available tools:
+postgres.query - Execute SQL against PostgreSQL;
+postgres.list_tables - List all tables in a database;
+github.search - Search code across repositories [offline].
+Call activate_tool(name) to enable a tool, then call it directly.
+```
+
+Tools from unavailable servers are marked `[offline]` in the catalog. The description updates dynamically via `tools/list_changed` when servers come online/offline or tools change.
 
 **Parameters:**
 - `name` (string, required) — Namespaced tool name (e.g., `postgres.query`)
@@ -133,7 +95,7 @@ Activates a tool for the current session. The tool appears in the client's `tool
 }
 ```
 
-**Error:** Returns an error if the tool name is not found or already activated.
+**Error:** Returns an error if the tool name is not found, server is unavailable, or tool is already activated.
 
 ### `deactivate_tool(name)`
 
@@ -157,6 +119,14 @@ Removes a tool from the current session's active set.
 
 **Error:** Returns an error if the tool is not currently activated.
 
+### Future: MCP `instructions` and Resources
+
+The MCP protocol supports an `instructions` field in the initialize response and a resources primitive for structured data. When client support for these features matures, the gateway should consider:
+- Using `instructions` for rich context injection at connection time
+- Exposing the tool catalog as an MCP resource (`gateway://catalog`) for programmatic clients
+
+For now, embedding the catalog in the `activate_tool` description is universally supported and updates dynamically via `tools/list_changed`.
+
 ## Tool Namespacing
 
 All tools are namespaced as `{server_name}.{tool_name}`.
@@ -173,20 +143,20 @@ This prevents collisions when multiple backends expose tools with the same name.
 ### Fresh Session
 
 1. Client connects via Streamable HTTP, completes MCP initialization
-2. Client calls `tools/list` → receives 4 meta-tools only
-3. No real tools are visible until the client actively discovers and activates them
+2. Client calls `tools/list` → receives 2 meta-tools (`activate_tool`, `deactivate_tool`)
+3. LLM reads `activate_tool` description → sees flat catalog of all available tools
+4. No backend tools are in `tools/list` until the LLM activates them
 
-### Discovery → Activation → Execution
+### Activation → Execution (agent skills pattern)
 
-1. Client calls `list_servers()` → gets server names and descriptions
-2. Client calls `list_server_tools(server="postgres")` → gets tool names and descriptions
-3. Client calls `activate_tool("postgres.query")` → gateway adds to session, emits `tools/list_changed`, returns full schema
-4. Client's MCP SDK auto-re-fetches `tools/list` → now sees `postgres.query` alongside meta-tools
-5. Client calls `postgres.query(sql="SELECT * FROM users")` → gateway routes to postgres backend as `query(sql="...")` → returns result
+1. LLM reads `activate_tool` description → sees `postgres.query - Execute SQL against PostgreSQL`
+2. LLM calls `activate_tool("postgres.query")` → gateway adds to session, emits `tools/list_changed`, returns full schema
+3. Client's MCP SDK auto-re-fetches `tools/list` → now sees `postgres.query` alongside meta-tools
+4. LLM calls `postgres.query(sql="SELECT * FROM users")` → gateway routes to postgres backend as `query(sql="...")` → returns result
 
 ### Deactivation
 
-1. Client calls `deactivate_tool("postgres.query")` → gateway removes from session, emits `tools/list_changed`
+1. LLM calls `deactivate_tool("postgres.query")` → gateway removes from session, emits `tools/list_changed`
 2. Client's tool list no longer includes `postgres.query`
 
 ## Transport
@@ -255,7 +225,7 @@ Without `tools/list_changed` support, activated tools would never appear in the 
 
 - Sessions are created when a client connects and completes MCP initialization (after capability check passes)
 - Each session maintains its own set of activated tools
-- `tools/list` returns the 4 meta-tools plus whatever tools the session has activated
+- `tools/list` returns the 2 meta-tools plus whatever tools the session has activated
 - Sessions end when the HTTP connection closes
 - On session end, all session state (activated tools) is cleaned up
 
@@ -266,7 +236,7 @@ Without `tools/list_changed` support, activated tools would never appear in the 
 1. Gateway reads config and resolves environment variables
 2. Attempts to connect to each backend server via Streamable HTTP
 3. For each reachable backend, calls `tools/list` to fetch tool metadata
-4. For unreachable backends, marks them as unavailable in the Tool Registry — they appear in `list_servers()` with a status indicating they are offline
+4. For unreachable backends, marks them as unavailable in the Tool Registry — they appear as `[offline]` in the `activate_tool` description and in the `/status` endpoint
 5. Builds the Tool Registry with all available server and tool information
 6. Starts listening for client connections
 7. Periodically retries connections to unavailable backends (every 30 seconds)
@@ -296,13 +266,42 @@ If a backend server is unreachable when a tool call is made, the gateway returns
 
 No retries, no circuit breakers for MVP.
 
+## Admin Status Endpoint
+
+The gateway exposes a `GET /status` HTTP endpoint for operational observability. This is separate from the MCP protocol and serves operators, monitoring scripts, and admin tooling.
+
+**Response:**
+```json
+{
+  "servers": [
+    {
+      "name": "postgres",
+      "status": "available",
+      "tools": ["postgres.query", "postgres.list_tables"],
+      "url": "http://localhost:3001/mcp"
+    },
+    {
+      "name": "github",
+      "status": "unavailable",
+      "tools": [],
+      "url": "http://localhost:3002/mcp"
+    }
+  ],
+  "activeSessions": 3
+}
+```
+
+This endpoint provides structured, machine-parseable data for:
+- Health monitoring (check server availability)
+- Config validation (verify new servers appeared after hot reload)
+- Debugging (confirm which tools are registered)
+- Admin dashboards
+
 ## Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
-| Unknown server name in `list_server_tools` | Return error: "Server '{name}' not found" |
-| Unavailable server in `list_server_tools` | Return error: "Server '{name}' is currently unavailable" |
-| Activate tool from unavailable server | Return error: "Server '{server}' is currently unavailable" |
+| Activate tool from unavailable server | Return error: "Server for tool '{name}' is currently unavailable" |
 | Unknown tool name in `activate_tool` | Return error: "Tool '{name}' not found" |
 | Already activated tool in `activate_tool` | Return error: "Tool '{name}' is already activated" |
 | Not activated tool in `deactivate_tool` | Return error: "Tool '{name}' is not activated" |
@@ -323,7 +322,7 @@ No retries, no circuit breakers for MVP.
 ## Out of Scope (MVP)
 
 - Authentication / authorization
-- Health checks / readiness probes
+- Health checks / readiness probes (beyond the basic `/status` endpoint)
 - Logging / observability / request tracing
 - Rate limiting
 - stdio transport (either side)
