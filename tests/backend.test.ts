@@ -22,6 +22,17 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
   StreamableHTTPClientTransport: vi.fn(),
 }));
 
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => {
+  const mockTransport = {
+    onclose: undefined as (() => void) | undefined,
+    onerror: undefined as ((error: Error) => void) | undefined,
+  };
+  return {
+    StdioClientTransport: vi.fn(() => mockTransport),
+    __mockStdioTransport: mockTransport,
+  };
+});
+
 describe("BackendManager", () => {
   let manager: BackendManager;
   let mockClient: any;
@@ -99,5 +110,78 @@ describe("BackendManager", () => {
     await manager.connect("postgres", "http://localhost:3001/mcp");
 
     expect(manager.isConnected("postgres")).toBe(true);
+  });
+
+  test("connects to a stdio backend and fetches tools", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({
+      tools: [
+        {
+          name: "read_file",
+          description: "Read a file",
+          inputSchema: {
+            type: "object",
+            properties: { path: { type: "string" } },
+          },
+        },
+      ],
+    });
+
+    const tools = await manager.connectStdio("filesystem", {
+      command: "node",
+      args: ["server.js"],
+    });
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe("read_file");
+    expect(manager.isConnected("filesystem")).toBe(true);
+  });
+
+  test("stdio and http clients coexist", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+
+    await manager.connect("http-server", "http://localhost:3001/mcp");
+    await manager.connectStdio("stdio-server", {
+      command: "node",
+      args: ["server.js"],
+    });
+
+    expect(manager.isConnected("http-server")).toBe(true);
+    expect(manager.isConnected("stdio-server")).toBe(true);
+  });
+
+  test("onClose callback fires for stdio backend", async () => {
+    const mod = await import("@modelcontextprotocol/sdk/client/stdio.js");
+    const mockStdioTransport = (mod as any).__mockStdioTransport;
+
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+
+    await manager.connectStdio("filesystem", {
+      command: "node",
+      args: ["server.js"],
+    });
+
+    const closeFn = vi.fn();
+    manager.onClose("filesystem", closeFn);
+
+    // Simulate process crash by calling the transport's onclose
+    mockStdioTransport.onclose?.();
+
+    expect(closeFn).toHaveBeenCalledOnce();
+  });
+
+  test("disconnect works for stdio backend", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+
+    await manager.connectStdio("filesystem", {
+      command: "node",
+      args: ["server.js"],
+    });
+    await manager.disconnect("filesystem");
+
+    expect(manager.isConnected("filesystem")).toBe(false);
   });
 });
