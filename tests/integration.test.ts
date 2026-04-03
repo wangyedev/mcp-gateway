@@ -21,6 +21,8 @@ import { MetaToolHandler } from "../src/meta-tools.js";
 import { Router } from "../src/router.js";
 import { BackendManager } from "../src/backend.js";
 import { GatewayServer } from "../src/server.js";
+import { createLogger } from "../src/logger.js";
+import { MetricsRegistry } from "../src/metrics.js";
 
 // Helper: registers tools on a McpServer using Zod schemas
 function registerMockTools(server: McpServer): void {
@@ -142,11 +144,24 @@ describe("Integration: MCP Gateway end-to-end", () => {
     const backendManager = new BackendManager();
     const router = new Router(registry, backendManager);
 
+    const metrics = new MetricsRegistry();
+    metrics.defineCounter("gateway_tool_calls_total", "Total tool calls");
+    metrics.defineHistogram(
+      "gateway_tool_call_duration_seconds",
+      "Tool call latency",
+      [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+    );
+    metrics.defineCounter("gateway_tool_activations_total", "Tool activations");
+    metrics.defineCounter("gateway_tool_deactivations_total", "Tool deactivations");
+    metrics.defineGauge("gateway_active_sessions", "Active sessions");
+    metrics.defineCounter("gateway_errors_total", "Errors");
+
     gateway = new GatewayServer({
       registry,
       sessions,
       metaTools,
       router,
+      metrics,
     });
 
     // 3. Connect gateway to mock backend and register tools
@@ -268,6 +283,45 @@ describe("Integration: MCP Gateway end-to-end", () => {
     expect(backend.tools).toContain("test-backend.add");
 
     expect(typeof data.activeSessions).toBe("number");
+  }, 15000);
+
+  test("GET /metrics returns Prometheus-format metrics", async () => {
+    // First, make a tool call to generate some metrics
+    const client = new Client(
+      { name: "metrics-test-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${gatewayPort}/mcp`)
+    );
+    await client.connect(transport);
+
+    try {
+      // Activate and call a tool to generate metrics
+      await client.callTool({
+        name: "activate_tool",
+        arguments: { name: "test-backend.echo" },
+      });
+      await client.callTool({
+        name: "test-backend.echo",
+        arguments: { message: "metrics test" },
+      });
+
+      // Check /metrics endpoint
+      const response = await fetch(
+        `http://127.0.0.1:${gatewayPort}/metrics`
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/plain");
+
+      const body = await response.text();
+      expect(body).toContain("gateway_tool_calls_total");
+      expect(body).toContain("gateway_tool_call_duration_seconds");
+      expect(body).toContain('status="success"');
+      expect(body).toContain("gateway_tool_activations_total");
+    } finally {
+      await client.close();
+    }
   }, 15000);
 
   test("calling a non-activated tool returns an error", async () => {
