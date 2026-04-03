@@ -35,11 +35,13 @@ Edit `mcp-gateway.yaml` with your backend MCP servers:
 gateway:
   port: 8080
   host: "0.0.0.0"
+  timeout: 30  # Global default timeout in seconds (optional)
 
 servers:
   # Streamable HTTP backend
   - name: postgres
     url: http://localhost:3001/mcp
+    timeout: 60  # Override global timeout for this server
 
   # Stdio backend (spawns child process)
   - name: filesystem
@@ -50,6 +52,7 @@ servers:
     command: npx -y @modelcontextprotocol/server-github
     env:
       GITHUB_TOKEN: ${GH_TOKEN}
+    timeout: 120  # Longer timeout for slow GitHub API calls
 ```
 
 Start the gateway:
@@ -76,6 +79,7 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 - **Session limits** -- Configurable max sessions (default 100) to prevent resource exhaustion.
 - **Structured logging** -- JSON or human-readable output with levels, controlled by `LOG_LEVEL` and `LOG_FORMAT` environment variables.
 - **Prometheus metrics** -- `GET /metrics` exposes tool call counts, latency histograms, error rates, and active sessions in Prometheus text format.
+- **Request timeouts** -- Configurable per-server and global timeouts for backend tool calls. Prevents hanging on unresponsive backends.
 
 ## Configuration
 
@@ -85,10 +89,12 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 |-------|----------|---------|-------------|
 | `gateway.port` | No | `8080` | Port to listen on |
 | `gateway.host` | No | `0.0.0.0` | Host to bind to |
+| `gateway.timeout` | No | `30` | Global default timeout in seconds for tool calls |
 | `servers[].name` | Yes | -- | Unique server name (used as namespace prefix) |
 | `servers[].url` | * | -- | Streamable HTTP URL of the backend MCP server |
 | `servers[].command` | * | -- | Command to spawn a stdio MCP server (mutually exclusive with `url`) |
 | `servers[].description` | No | Auto-generated | Human-readable description |
+| `servers[].timeout` | No | Global or `30` | Per-server timeout override in seconds |
 | `servers[].env` | No | -- | Environment variables for stdio servers |
 | `servers[].cwd` | No | Inherited | Working directory for stdio servers |
 

@@ -10,9 +10,13 @@ export class BackendManager {
   private clients = new Map<string, Client>();
   private transports = new Map<string, Transport>();
   private closeCallbacks = new Map<string, () => void>();
+  private timeouts = new Map<string, number>();
 
-  async connect(name: string, url: string): Promise<ToolDefinition[]> {
+  async connect(name: string, url: string, timeoutMs?: number): Promise<ToolDefinition[]> {
     const transport = new StreamableHTTPClientTransport(new URL(url));
+    if (timeoutMs !== undefined) {
+      this.timeouts.set(name, timeoutMs);
+    }
     return this.connectWithTransport(name, transport);
   }
 
@@ -23,6 +27,7 @@ export class BackendManager {
       args?: string[];
       env?: Record<string, string>;
       cwd?: string;
+      timeoutMs?: number;
     }
   ): Promise<ToolDefinition[]> {
     const transport = new StdioClientTransport({
@@ -31,6 +36,10 @@ export class BackendManager {
       env: params.env,
       cwd: params.cwd,
     });
+
+    if (params.timeoutMs !== undefined) {
+      this.timeouts.set(name, params.timeoutMs);
+    }
 
     transport.onclose = () => {
       // Only fire crash callback if we still consider this client connected
@@ -72,6 +81,7 @@ export class BackendManager {
       this.clients.delete(name);
       this.transports.delete(name);
       this.closeCallbacks.delete(name);
+      this.timeouts.delete(name);
       await client.close();
     }
   }
@@ -91,8 +101,17 @@ export class BackendManager {
       throw new Error(`Backend server '${serverName}' is not connected`);
     }
 
+    const timeoutMs = this.timeouts.get(serverName) ?? 30000; // default 30s
+
     try {
-      const result = await client.callTool({ name: toolName, arguments: args });
+      const result = await Promise.race([
+        client.callTool({ name: toolName, arguments: args }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(
+            `Tool call to '${serverName}.${toolName}' timed out after ${timeoutMs / 1000}s`
+          )), timeoutMs)
+        ),
+      ]);
       return result as {
         content: Array<{ type: string; text?: string; [key: string]: unknown }>;
       };

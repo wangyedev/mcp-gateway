@@ -6,17 +6,20 @@
 gateway:
   port: 8080
   host: "0.0.0.0"
+  # timeout: 30  # Global default timeout in seconds (optional, defaults to 30s if not specified)
 
 servers:
   # Streamable HTTP backend
   - name: postgres
     url: http://localhost:3001/mcp
     # description: "Database tools" # optional — auto-generated from tool descriptions
+    # timeout: 60  # Per-server timeout override in seconds (optional, overrides global default)
 
   # Stdio backend — spawns a child process
   # - name: filesystem
   #   command: npx -y @modelcontextprotocol/server-filesystem /tmp
   #   description: "File system access"
+  #   timeout: 45  # Timeout for filesystem operations
 
   # Stdio backend with environment variables and working directory
   # - name: github
@@ -24,8 +27,10 @@ servers:
   #   env:
   #     GITHUB_TOKEN: ${GH_TOKEN}
   #   cwd: /opt/servers
+  #   timeout: 120  # Longer timeout for GitHub API operations
 
   # Environment variables are supported in URLs too:
   # - name: internal
   #   url: ${INTERNAL_MCP_URL}
   #   description: "Internal company APIs"
+  #   # No timeout specified - uses global default (30s) or hardcoded default if no global is set

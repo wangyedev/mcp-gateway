@@ -184,4 +184,74 @@ describe("BackendManager", () => {
 
     expect(manager.isConnected("filesystem")).toBe(false);
   });
+
+  test("callTool times out with default timeout", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    // Simulate a slow tool call that never resolves
+    mockClient.callTool.mockImplementation(() => new Promise(() => {}));
+
+    await manager.connect("slow-server", "http://localhost:3001/mcp");
+
+    await expect(
+      manager.callTool("slow-server", "slow_query", {})
+    ).rejects.toThrow("timed out after 30s");
+  }, 35000); // Test timeout longer than default timeout
+
+  test("callTool times out with custom timeout", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    // Simulate a slow tool call that never resolves
+    mockClient.callTool.mockImplementation(() => new Promise(() => {}));
+
+    // Connect with 2 second timeout
+    await manager.connect("slow-server", "http://localhost:3001/mcp", 2000);
+
+    const startTime = Date.now();
+    await expect(
+      manager.callTool("slow-server", "slow_query", {})
+    ).rejects.toThrow("timed out after 2s");
+    const elapsed = Date.now() - startTime;
+
+    // Should timeout around 2 seconds, not the default 30
+    expect(elapsed).toBeLessThan(3000);
+    expect(elapsed).toBeGreaterThan(1900);
+  }, 10000);
+
+  test("callTool succeeds when tool completes before timeout", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    // Simulate a tool call that takes 100ms
+    mockClient.callTool.mockImplementation(() =>
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ content: [{ type: "text", text: "success" }] }), 100)
+      )
+    );
+
+    await manager.connect("server", "http://localhost:3001/mcp", 1000);
+
+    const result = await manager.callTool("server", "query", {});
+    expect(result.content[0].text).toBe("success");
+  });
+
+  test("stdio backend uses custom timeout", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    mockClient.callTool.mockImplementation(() => new Promise(() => {}));
+
+    await manager.connectStdio("filesystem", {
+      command: "node",
+      args: ["server.js"],
+      timeoutMs: 1000,
+    });
+
+    const startTime = Date.now();
+    await expect(
+      manager.callTool("filesystem", "read_file", { path: "/test" })
+    ).rejects.toThrow("timed out after 1s");
+    const elapsed = Date.now() - startTime;
+
+    expect(elapsed).toBeLessThan(2000);
+    expect(elapsed).toBeGreaterThan(900);
+  }, 5000);
 });
