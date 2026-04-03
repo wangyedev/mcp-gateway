@@ -24,6 +24,8 @@ interface ToolDefinitionOutput {
 interface ToolCallResult {
   content: Array<{ type: string; text?: string; [key: string]: unknown }>;
   isError?: boolean;
+  _meta?: { [key: string]: unknown };
+  [key: string]: unknown;
 }
 
 interface GatewayServerOptions {

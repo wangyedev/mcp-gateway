@@ -1,6 +1,7 @@
 // src/backend.ts
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ToolDefinition } from "./registry.js";
 
 export class BackendManager {
@@ -76,9 +77,6 @@ export class BackendManager {
   onToolsChanged(name: string, callback: () => void): void {
     const client = this.clients.get(name);
     if (!client) return;
-    client.setNotificationHandler(
-      { method: "notifications/tools/list_changed" },
-      callback
-    );
+    client.setNotificationHandler(ToolListChangedNotificationSchema, callback);
   }
 }

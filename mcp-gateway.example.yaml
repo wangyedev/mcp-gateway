@@ -1,0 +1,18 @@
+# mcp-gateway.example.yaml
+#
+# MCP Gateway configuration
+# Copy to mcp-gateway.yaml and adjust for your setup.
+
+gateway:
+  port: 8080
+  host: "0.0.0.0"
+
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    # description: "Database tools" # optional — auto-generated from tool descriptions
+
+  # Environment variables are supported:
+  # - name: internal
+  #   url: ${INTERNAL_MCP_URL}
+  #   description: "Internal company APIs"
