@@ -43,8 +43,6 @@ interface McpSessionState {
 }
 
 const META_TOOL_NAMES = new Set([
-  "list_servers",
-  "list_server_tools",
   "activate_tool",
   "deactivate_tool",
 ]);
@@ -128,12 +126,6 @@ export class GatewayServer {
     let result: unknown;
 
     switch (toolName) {
-      case "list_servers":
-        result = this.metaTools.listServers();
-        break;
-      case "list_server_tools":
-        result = this.metaTools.listServerTools(args.server as string);
-        break;
       case "activate_tool":
         result = this.metaTools.activateTool(sessionId, args.name as string);
         break;
@@ -157,6 +149,19 @@ export class GatewayServer {
   async startMcp(port: number, host: string): Promise<number> {
     const app = express();
     app.use(express.json());
+
+    // GET /status -- returns server status and active session count
+    app.get("/status", (_req, res) => {
+      const servers = this.registry.listServers().map((s) => ({
+        name: s.name,
+        status: s.status,
+        tools: this.registry.getToolNamesForServer(s.name),
+      }));
+      res.json({
+        servers,
+        activeSessions: this.mcpSessions.size,
+      });
+    });
 
     // POST /mcp -- handles MCP messages (initialize + subsequent requests)
     app.post("/mcp", async (req, res) => {

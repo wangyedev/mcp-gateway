@@ -37,29 +37,6 @@ describe("MetaToolHandler", () => {
     });
   });
 
-  describe("listServers", () => {
-    test("returns all servers", () => {
-      const result = handler.listServers();
-      expect(result.servers).toHaveLength(1);
-      expect(result.servers[0].name).toBe("postgres");
-      expect(result.servers[0].description).toBe("Database tools");
-      expect(result.servers[0].status).toBe("available");
-    });
-  });
-
-  describe("listServerTools", () => {
-    test("returns tools for a server", () => {
-      const result = handler.listServerTools("postgres");
-      expect(result.server).toBe("postgres");
-      expect(result.tools).toHaveLength(2);
-      expect(result.tools[0].name).toBe("postgres.query");
-    });
-
-    test("throws for unknown server", () => {
-      expect(() => handler.listServerTools("unknown")).toThrow("not found");
-    });
-  });
-
   describe("activateTool", () => {
     test("activates a tool and returns schema", () => {
       const result = handler.activateTool(sessionId, "postgres.query");
@@ -108,34 +85,32 @@ describe("MetaToolHandler", () => {
   describe("getToolDefinitions", () => {
     test("returns meta-tool definitions", () => {
       const defs = handler.getToolDefinitions();
-      expect(defs).toHaveLength(4);
+      expect(defs).toHaveLength(2);
       const names = defs.map((d) => d.name);
-      expect(names).toContain("list_servers");
-      expect(names).toContain("list_server_tools");
       expect(names).toContain("activate_tool");
       expect(names).toContain("deactivate_tool");
     });
 
-    test("list_servers description includes server catalog", () => {
+    test("activate_tool description includes tool catalog", () => {
       const defs = handler.getToolDefinitions();
-      const listServers = defs.find((d) => d.name === "list_servers")!;
-      expect(listServers.description).toContain("postgres");
-      expect(listServers.description).toContain("Database tools");
-      expect(listServers.description).toContain("list_server_tools");
+      const activateTool = defs.find((d) => d.name === "activate_tool")!;
+      expect(activateTool.description).toContain("postgres.query");
+      expect(activateTool.description).toContain("postgres.list_tables");
+      expect(activateTool.description).toContain("Execute SQL");
     });
 
-    test("list_servers description shows offline servers", () => {
+    test("activate_tool description shows offline servers", () => {
       registry.markUnavailable("broken");
       const defs = handler.getToolDefinitions();
-      const listServers = defs.find((d) => d.name === "list_servers")!;
-      expect(listServers.description).toContain("broken [offline]");
+      const activateTool = defs.find((d) => d.name === "activate_tool")!;
+      expect(activateTool.description).toContain("[offline] broken");
     });
 
-    test("list_servers description handles no servers", () => {
+    test("activate_tool description handles no servers", () => {
       registry.removeServer("postgres");
       const defs = handler.getToolDefinitions();
-      const listServers = defs.find((d) => d.name === "list_servers")!;
-      expect(listServers.description).toContain("No servers are currently registered");
+      const activateTool = defs.find((d) => d.name === "activate_tool")!;
+      expect(activateTool.description).toContain("No tools are currently available");
     });
   });
 

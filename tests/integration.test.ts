@@ -170,7 +170,7 @@ describe("Integration: MCP Gateway end-to-end", () => {
     });
   }, 15000);
 
-  test("full flow: list_servers -> list_server_tools -> activate -> call -> deactivate", async () => {
+  test("full flow: read catalog -> activate -> call -> deactivate", async () => {
     // Create MCP client connecting to the gateway
     const client = new Client(
       { name: "test-client", version: "1.0.0" },
@@ -182,44 +182,21 @@ describe("Integration: MCP Gateway end-to-end", () => {
     await client.connect(transport);
 
     try {
-      // Step 1: List tools -- should only have meta-tools
+      // Step 1: List tools -- should only have 2 meta-tools
       const initialTools = await client.listTools();
       const initialNames = initialTools.tools.map((t) => t.name);
-      expect(initialNames).toContain("list_servers");
-      expect(initialNames).toContain("list_server_tools");
       expect(initialNames).toContain("activate_tool");
       expect(initialNames).toContain("deactivate_tool");
-      expect(initialNames).toHaveLength(4);
+      expect(initialNames).toHaveLength(2);
 
-      // Step 2: Call list_servers meta-tool
-      const listServersResult = await client.callTool({
-        name: "list_servers",
-        arguments: {},
-      });
-      const servers = JSON.parse(
-        (listServersResult.content as Array<{ type: string; text: string }>)[0]
-          .text
-      );
-      expect(servers.servers).toHaveLength(1);
-      expect(servers.servers[0].name).toBe("test-backend");
+      // Step 2: Read activate_tool description to find available tools
+      const activateToolDef = initialTools.tools.find(
+        (t) => t.name === "activate_tool"
+      )!;
+      expect(activateToolDef.description).toContain("test-backend.echo");
+      expect(activateToolDef.description).toContain("test-backend.add");
 
-      // Step 3: Call list_server_tools
-      const listToolsResult = await client.callTool({
-        name: "list_server_tools",
-        arguments: { server: "test-backend" },
-      });
-      const toolsInfo = JSON.parse(
-        (listToolsResult.content as Array<{ type: string; text: string }>)[0]
-          .text
-      );
-      expect(toolsInfo.tools).toHaveLength(2);
-      const toolNames = toolsInfo.tools.map(
-        (t: { name: string }) => t.name
-      );
-      expect(toolNames).toContain("test-backend.echo");
-      expect(toolNames).toContain("test-backend.add");
-
-      // Step 4: Activate a tool
+      // Step 3: Activate a tool
       const activateResult = await client.callTool({
         name: "activate_tool",
         arguments: { name: "test-backend.echo" },
@@ -231,13 +208,13 @@ describe("Integration: MCP Gateway end-to-end", () => {
       expect(activateData.success).toBe(true);
       expect(activateData.tool.name).toBe("test-backend.echo");
 
-      // Step 5: Verify tool list now includes the activated tool
+      // Step 4: Verify tool list now includes the activated tool
       const afterActivateTools = await client.listTools();
       const afterNames = afterActivateTools.tools.map((t) => t.name);
       expect(afterNames).toContain("test-backend.echo");
-      expect(afterNames).toHaveLength(5); // 4 meta + 1 activated
+      expect(afterNames).toHaveLength(3); // 2 meta + 1 activated
 
-      // Step 6: Call the activated tool
+      // Step 5: Call the activated tool
       const echoResult = await client.callTool({
         name: "test-backend.echo",
         arguments: { message: "hello world" },
@@ -246,7 +223,7 @@ describe("Integration: MCP Gateway end-to-end", () => {
         (echoResult.content as Array<{ type: string; text: string }>)[0].text
       ).toBe("echo: hello world");
 
-      // Step 7: Deactivate the tool
+      // Step 6: Deactivate the tool
       const deactivateResult = await client.callTool({
         name: "deactivate_tool",
         arguments: { name: "test-backend.echo" },
@@ -257,17 +234,39 @@ describe("Integration: MCP Gateway end-to-end", () => {
       );
       expect(deactivateData.success).toBe(true);
 
-      // Step 8: Verify tool list is back to meta-tools only
+      // Step 7: Verify tool list is back to meta-tools only
       const afterDeactivateTools = await client.listTools();
       const afterDeactivateNames = afterDeactivateTools.tools.map(
         (t) => t.name
       );
-      expect(afterDeactivateNames).toHaveLength(4);
+      expect(afterDeactivateNames).toHaveLength(2);
       expect(afterDeactivateNames).not.toContain("test-backend.echo");
     } finally {
       await client.close();
     }
   }, 30000);
+
+  test("GET /status returns server status and active sessions", async () => {
+    const response = await fetch(
+      `http://127.0.0.1:${gatewayPort}/status`
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data.servers).toBeDefined();
+    expect(Array.isArray(data.servers)).toBe(true);
+    expect(data.servers.length).toBeGreaterThanOrEqual(1);
+
+    const backend = data.servers.find(
+      (s: { name: string }) => s.name === "test-backend"
+    );
+    expect(backend).toBeDefined();
+    expect(backend.status).toBe("available");
+    expect(backend.tools).toContain("test-backend.echo");
+    expect(backend.tools).toContain("test-backend.add");
+
+    expect(typeof data.activeSessions).toBe("number");
+  }, 15000);
 
   test("calling a non-activated tool returns an error", async () => {
     const client = new Client(

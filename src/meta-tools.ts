@@ -1,5 +1,5 @@
 // src/meta-tools.ts
-import { ToolRegistry, ResolvedTool, ToolSchema } from "./registry.js";
+import { ToolRegistry, ToolSchema } from "./registry.js";
 import { SessionManager } from "./session.js";
 
 interface ToolDefinitionOutput {
@@ -13,17 +13,6 @@ export class MetaToolHandler {
     private registry: ToolRegistry,
     private sessions: SessionManager
   ) {}
-
-  listServers(): { servers: Array<{ name: string; description?: string; status: string }> } {
-    return { servers: this.registry.listServers() };
-  }
-
-  listServerTools(
-    serverName: string
-  ): { server: string; tools: Array<{ name: string; description: string }> } {
-    const tools = this.registry.listServerTools(serverName);
-    return { server: serverName, tools };
-  }
 
   activateTool(
     sessionId: string,
@@ -56,47 +45,23 @@ export class MetaToolHandler {
   // the initialize response, which clients inject into the LLM's system prompt.
   // When client support for `instructions` matures, the gateway should set it
   // dynamically with the server catalog for richer context injection at
-  // connection time. For now, we embed the catalog in the `list_servers` tool
+  // connection time. For now, we embed the catalog in the `activate_tool` tool
   // description, which is universally supported and updates via tools/list_changed.
 
   getToolDefinitions(): ToolDefinitionOutput[] {
-    const serverSummary = this.buildServerSummary();
+    const catalogDescription = this.buildToolCatalog();
 
     return [
       {
-        name: "list_servers",
-        description: serverSummary,
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      },
-      {
-        name: "list_server_tools",
-        description:
-          "List all tools available on a specific server. Returns tool names and descriptions. Use this to explore a server's capabilities before activating individual tools.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description: "Server name from list_servers()",
-            },
-          },
-          required: ["server"],
-        },
-      },
-      {
         name: "activate_tool",
-        description:
-          "Activate a tool for use in this session. Once activated, the tool appears in your available tools and can be called directly. Returns the full tool schema.",
+        description: catalogDescription,
         inputSchema: {
           type: "object",
           properties: {
             name: {
               type: "string",
               description:
-                "Namespaced tool name (e.g., 'postgres.query'). Get names from list_server_tools().",
+                "Namespaced tool name (e.g., 'postgres.query') from the catalog above.",
             },
           },
           required: ["name"],
@@ -120,23 +85,28 @@ export class MetaToolHandler {
     ];
   }
 
-  private buildServerSummary(): string {
+  private buildToolCatalog(): string {
     const servers = this.registry.listServers();
     if (servers.length === 0) {
-      return "List available MCP servers. No servers are currently registered.";
+      return "Activate a tool for use in this session. No tools are currently available.";
     }
 
-    const entries = servers.map((s) => {
-      const status = s.status === "available" ? "" : " [offline]";
-      const desc = s.description ? ` - ${s.description}` : "";
-      return `${s.name}${status}${desc}`;
-    });
+    const entries: string[] = [];
+    for (const server of servers) {
+      if (server.status === "unavailable") {
+        entries.push(`[offline] ${server.name}`);
+        continue;
+      }
+      const tools = this.registry.listServerTools(server.name);
+      for (const tool of tools) {
+        entries.push(`${tool.name} - ${tool.description}`);
+      }
+    }
 
     return (
-      "List available MCP servers. " +
-      "Current servers: " +
+      "Activate a tool for use in this session. Available tools: " +
       entries.join("; ") +
-      ". Call list_server_tools(server) to see tools, then activate_tool(name) to enable one."
+      ". Call activate_tool(name) to enable a tool, then call it directly."
     );
   }
 

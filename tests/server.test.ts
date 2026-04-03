@@ -58,11 +58,9 @@ describe("GatewayServer", () => {
     const tools = server.getToolsForSession(sessionId);
 
     const names = tools.map((t) => t.name);
-    expect(names).toContain("list_servers");
-    expect(names).toContain("list_server_tools");
     expect(names).toContain("activate_tool");
     expect(names).toContain("deactivate_tool");
-    expect(names).toHaveLength(4);
+    expect(names).toHaveLength(2);
   });
 
   test("getToolsForSession includes activated tools", () => {
@@ -72,16 +70,7 @@ describe("GatewayServer", () => {
     const tools = server.getToolsForSession(sessionId);
     const names = tools.map((t) => t.name);
     expect(names).toContain("postgres.query");
-    expect(names).toHaveLength(5);
-  });
-
-  test("handleToolCall routes meta-tool list_servers", async () => {
-    const sessionId = sessions.createSession();
-    const result = await server.handleToolCall(sessionId, "list_servers", {});
-
-    const parsed = JSON.parse(result.content[0].text!);
-    expect(parsed.servers).toHaveLength(1);
-    expect(parsed.servers[0].name).toBe("postgres");
+    expect(names).toHaveLength(3);
   });
 
   test("handleToolCall routes meta-tool activate_tool", async () => {
