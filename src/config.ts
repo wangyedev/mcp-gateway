@@ -1,6 +1,11 @@
 import { readFileSync } from "fs";
 import { parse } from "yaml";
 
+export interface ToolPolicyConfig {
+  allow?: string[];
+  deny?: string[];
+}
+
 export interface ServerConfig {
   name: string;
   url?: string;
@@ -8,6 +13,7 @@ export interface ServerConfig {
   description?: string;
   env?: Record<string, string>;
   cwd?: string;
+  tools?: ToolPolicyConfig;
 }
 
 export interface GatewayConfig {
@@ -54,6 +60,26 @@ export function loadConfig(filePath: string): Config {
     }
     if (names.has(server.name)) {
       throw new Error(`Config has duplicate server name: '${server.name}'`);
+    }
+    // Validate tool policy
+    if (server.tools) {
+      const hasAllow = !!server.tools.allow;
+      const hasDeny = !!server.tools.deny;
+      if (hasAllow && hasDeny) {
+        throw new Error(
+          `Server '${server.name}' cannot have both 'allow' and 'deny' policies - they are mutually exclusive`
+        );
+      }
+      if (hasAllow && (!Array.isArray(server.tools.allow) || server.tools.allow.length === 0)) {
+        throw new Error(
+          `Server '${server.name}' has empty 'allow' list - either specify tools or remove the field - must be non-empty`
+        );
+      }
+      if (hasDeny && (!Array.isArray(server.tools.deny) || server.tools.deny.length === 0)) {
+        throw new Error(
+          `Server '${server.name}' has empty 'deny' list - either specify tools or remove the field - must be non-empty`
+        );
+      }
     }
     names.add(server.name);
   }

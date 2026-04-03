@@ -193,4 +193,47 @@ describe("ToolRegistry", () => {
     const names = registry.getToolNamesForServer("pg");
     expect(names).toEqual(["pg.query", "pg.list_tables"]);
   });
+
+  test("allow policy filters to only allowed tools", () => {
+    registry.registerServer("postgres", {
+      tools: [
+        { name: "query", description: "Run SQL", inputSchema: { type: "object", properties: {} } },
+        { name: "drop_table", description: "Drop table", inputSchema: { type: "object", properties: {} } },
+        { name: "list_tables", description: "List tables", inputSchema: { type: "object", properties: {} } },
+      ],
+      policy: { allow: ["query", "list_tables"] },
+    });
+
+    const tools = registry.getToolNamesForServer("postgres");
+    expect(tools).toContain("postgres.query");
+    expect(tools).toContain("postgres.list_tables");
+    expect(tools).not.toContain("postgres.drop_table");
+  });
+
+  test("deny policy excludes denied tools", () => {
+    registry.registerServer("postgres", {
+      tools: [
+        { name: "query", description: "Run SQL", inputSchema: { type: "object", properties: {} } },
+        { name: "drop_table", description: "Drop table", inputSchema: { type: "object", properties: {} } },
+      ],
+      policy: { deny: ["drop_table"] },
+    });
+
+    const tools = registry.getToolNamesForServer("postgres");
+    expect(tools).toContain("postgres.query");
+    expect(tools).not.toContain("postgres.drop_table");
+  });
+
+  test("no policy registers all tools", () => {
+    registry.registerServer("postgres", {
+      tools: [
+        { name: "query", description: "Run SQL", inputSchema: { type: "object", properties: {} } },
+        { name: "drop_table", description: "Drop table", inputSchema: { type: "object", properties: {} } },
+      ],
+    });
+
+    const tools = registry.getToolNamesForServer("postgres");
+    expect(tools).toContain("postgres.query");
+    expect(tools).toContain("postgres.drop_table");
+  });
 });

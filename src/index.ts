@@ -92,6 +92,7 @@ async function main(): Promise<void> {
         registry.registerServer(serverName, {
           description: getDescription(),
           tools: newTools,
+          policy: config.servers.find((s) => s.name === serverName)?.tools,
         });
         const newToolNames = new Set(registry.getToolNamesForServer(serverName));
         const removedTools = oldToolNames.filter((n) => !newToolNames.has(n));
@@ -186,6 +187,7 @@ async function main(): Promise<void> {
       registry.registerServer(serverConfig.name, {
         description: serverConfig.description,
         tools,
+        policy: serverConfig.tools,
       });
       logger.info("Connected to backend", {
         server: serverConfig.name,
@@ -286,6 +288,7 @@ async function main(): Promise<void> {
             description: config.servers.find((s) => s.name === entry.name)
               ?.description,
             tools,
+            policy: config.servers.find((s) => s.name === entry.name)?.tools,
           });
           subscribeToToolChanges(
             entry.name,
@@ -376,6 +379,7 @@ async function main(): Promise<void> {
               registry.registerServer(sc.name, {
                 description: sc.description,
                 tools,
+                policy: sc.tools,
               });
               subscribeToToolChanges(
                 sc.name,
@@ -409,6 +413,7 @@ async function main(): Promise<void> {
             registry.registerServer(sc.name, {
               description: sc.description,
               tools,
+              policy: sc.tools,
             });
             subscribeToToolChanges(
               sc.name,

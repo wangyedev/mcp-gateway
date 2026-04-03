@@ -270,6 +270,80 @@ servers:
     );
     expect(config.servers[1].url).toBeUndefined();
   });
+
+  test("parses server with tools allow list", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    tools:
+      allow: ["query", "list_tables"]
+`);
+    const config = loadConfig(configPath);
+    expect(config.servers[0].tools).toEqual({ allow: ["query", "list_tables"] });
+  });
+
+  test("parses server with tools deny list", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    tools:
+      deny: ["drop_table"]
+`);
+    const config = loadConfig(configPath);
+    expect(config.servers[0].tools).toEqual({ deny: ["drop_table"] });
+  });
+
+  test("throws when server has both allow and deny", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    tools:
+      allow: ["query"]
+      deny: ["drop_table"]
+`);
+    expect(() => loadConfig(configPath)).toThrow("mutually exclusive");
+  });
+
+  test("throws when allow list is empty", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    tools:
+      allow: []
+`);
+    expect(() => loadConfig(configPath)).toThrow("non-empty");
+  });
+
+  test("throws when deny list is empty", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+    tools:
+      deny: []
+`);
+    expect(() => loadConfig(configPath)).toThrow("non-empty");
+  });
+
+  test("server without tools field is valid", () => {
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, `
+servers:
+  - name: postgres
+    url: http://localhost:3001/mcp
+`);
+    const config = loadConfig(configPath);
+    expect(config.servers[0].tools).toBeUndefined();
+  });
 });
 
 describe("parseCommand", () => {

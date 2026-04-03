@@ -1,4 +1,5 @@
 // src/registry.ts
+import type { ToolPolicyConfig } from "./config.js";
 
 export interface ToolSchema {
   type: "object";
@@ -42,13 +43,23 @@ export class ToolRegistry {
     { description?: string; status: "available" | "unavailable"; tools: ToolDefinition[] }
   >();
 
-  registerServer(name: string, registration: ServerRegistration): void {
+  registerServer(name: string, registration: ServerRegistration & { policy?: ToolPolicyConfig }): void {
+    let filteredTools = registration.tools;
+
+    if (registration.policy?.allow) {
+      const allowed = new Set(registration.policy.allow);
+      filteredTools = filteredTools.filter(t => allowed.has(t.name));
+    } else if (registration.policy?.deny) {
+      const denied = new Set(registration.policy.deny);
+      filteredTools = filteredTools.filter(t => !denied.has(t.name));
+    }
+
     const description =
-      registration.description ?? this.generateDescription(registration.tools);
+      registration.description ?? this.generateDescription(filteredTools);
     this.servers.set(name, {
       description,
       status: "available",
-      tools: registration.tools,
+      tools: filteredTools,
     });
   }
 
