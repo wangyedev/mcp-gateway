@@ -37,16 +37,19 @@ gateway:
   host: "0.0.0.0"
 
 servers:
+  # Streamable HTTP backend
   - name: postgres
     url: http://localhost:3001/mcp
 
-  - name: github
-    url: http://localhost:3002/mcp
-    description: "Manage repos, PRs, and issues"
+  # Stdio backend (spawns child process)
+  - name: filesystem
+    command: npx -y @modelcontextprotocol/server-filesystem /tmp
 
-  - name: internal
-    url: ${INTERNAL_MCP_URL}
-    description: "Internal company APIs"
+  # Stdio with environment variables
+  - name: github
+    command: npx -y @modelcontextprotocol/server-github
+    env:
+      GITHUB_TOKEN: ${GH_TOKEN}
 ```
 
 Start the gateway:
@@ -64,6 +67,7 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 - **Progressive tool disclosure** -- LLM sees tool names + descriptions at startup, full schemas only on activation. Matches the agent skills pattern.
 - **Flat tool catalog** -- All tools across all servers listed in the `activate_tool` description. LLM can skip straight to activation without discovery calls.
 - **Tool namespacing** -- Tools are namespaced as `{server}.{tool}` (e.g., `postgres.query`). No collisions between servers.
+- **Stdio backend support** -- Connect to stdio-based MCP servers by specifying a `command` instead of a `url`. The gateway spawns and manages child processes automatically.
 - **YAML config with hot reload** -- Add/remove/modify servers without restarting. Changes propagate to connected clients via `tools/list_changed`.
 - **Environment variable substitution** -- Use `${VAR_NAME}` in config values.
 - **Startup resilience** -- Gateway starts even if some backends are down. Unavailable servers are marked `[offline]` and retried every 30 seconds.
@@ -80,8 +84,13 @@ Connect any MCP client to `http://localhost:8080/mcp`.
 | `gateway.port` | No | `8080` | Port to listen on |
 | `gateway.host` | No | `0.0.0.0` | Host to bind to |
 | `servers[].name` | Yes | -- | Unique server name (used as namespace prefix) |
-| `servers[].url` | Yes | -- | Streamable HTTP URL of the backend MCP server |
+| `servers[].url` | * | -- | Streamable HTTP URL of the backend MCP server |
+| `servers[].command` | * | -- | Command to spawn a stdio MCP server (mutually exclusive with `url`) |
 | `servers[].description` | No | Auto-generated | Human-readable description |
+| `servers[].env` | No | -- | Environment variables for stdio servers |
+| `servers[].cwd` | No | Inherited | Working directory for stdio servers |
+
+\* Each server must have exactly one of `url` or `command`.
 
 ### Environment Variables
 
@@ -148,7 +157,7 @@ npm run build         # compile TypeScript
 ## Requirements
 
 - Node.js 18+
-- Backend MCP servers must support Streamable HTTP transport
+- Backend MCP servers must support Streamable HTTP or stdio transport
 
 ## License
 

@@ -8,11 +8,24 @@ gateway:
   host: "0.0.0.0"
 
 servers:
+  # Streamable HTTP backend
   - name: postgres
     url: http://localhost:3001/mcp
     # description: "Database tools" # optional — auto-generated from tool descriptions
 
-  # Environment variables are supported:
+  # Stdio backend — spawns a child process
+  # - name: filesystem
+  #   command: npx -y @modelcontextprotocol/server-filesystem /tmp
+  #   description: "File system access"
+
+  # Stdio backend with environment variables and working directory
+  # - name: github
+  #   command: npx -y @modelcontextprotocol/server-github
+  #   env:
+  #     GITHUB_TOKEN: ${GH_TOKEN}
+  #   cwd: /opt/servers
+
+  # Environment variables are supported in URLs too:
   # - name: internal
   #   url: ${INTERNAL_MCP_URL}
   #   description: "Internal company APIs"
