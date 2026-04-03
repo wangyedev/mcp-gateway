@@ -4,6 +4,8 @@ import { SessionManager } from "./session.js";
 import { MetaToolHandler } from "./meta-tools.js";
 import { Router } from "./router.js";
 import { ToolSchema } from "./registry.js";
+import { Logger } from "./logger.js";
+import { MetricsRegistry } from "./metrics.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -35,6 +37,8 @@ interface GatewayServerOptions {
   router: Router;
   serverUrls?: Map<string, string>;
   maxSessions?: number;
+  logger?: Logger;
+  metrics?: MetricsRegistry;
 }
 
 const DEFAULT_MAX_SESSIONS = 100;
@@ -58,6 +62,8 @@ export class GatewayServer {
   private router: Router;
   private serverUrls: Map<string, string>;
   private maxSessions: number;
+  private logger?: Logger;
+  private metrics?: MetricsRegistry;
 
   // MCP protocol state
   private httpServer: HttpServer | null = null;
@@ -71,6 +77,8 @@ export class GatewayServer {
     this.router = options.router;
     this.serverUrls = options.serverUrls ?? new Map();
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
+    this.logger = options.logger;
+    this.metrics = options.metrics;
   }
 
   getToolsForSession(sessionId: string): ToolDefinitionOutput[] {
@@ -84,21 +92,39 @@ export class GatewayServer {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<ToolCallResult> {
+    const startTime = Date.now();
     try {
       if (META_TOOL_NAMES.has(toolName)) {
         const result = this.handleMetaToolCall(sessionId, toolName, args);
 
-        // After activate/deactivate, emit tools/list_changed for the session
+        // Track activations/deactivations
+        if (toolName === "activate_tool") {
+          const name = args.name as string;
+          const dotIdx = name?.indexOf(".");
+          if (dotIdx > 0) {
+            this.metrics?.incrementCounter("gateway_tool_activations_total", {
+              server: name.substring(0, dotIdx),
+              tool: name.substring(dotIdx + 1),
+            });
+          }
+        } else if (toolName === "deactivate_tool") {
+          const name = args.name as string;
+          const dotIdx = name?.indexOf(".");
+          if (dotIdx > 0) {
+            this.metrics?.incrementCounter("gateway_tool_deactivations_total", {
+              server: name.substring(0, dotIdx),
+              tool: name.substring(dotIdx + 1),
+            });
+          }
+        }
+
         if (toolName === "activate_tool" || toolName === "deactivate_tool") {
-          this.notifyToolListChangedForSessions([sessionId]).catch(
-            () => {}
-          );
+          this.notifyToolListChangedForSessions([sessionId]).catch(() => {});
         }
 
         return result;
       }
 
-      // Check if tool is activated for this session
       if (!this.sessions.isToolActivated(sessionId, toolName)) {
         return {
           content: [
@@ -112,8 +138,49 @@ export class GatewayServer {
       }
 
       const result = await this.router.routeToolCall(toolName, args);
+
+      // Record success metrics
+      const dotIdx = toolName.indexOf(".");
+      if (dotIdx > 0) {
+        const server = toolName.substring(0, dotIdx);
+        const tool = toolName.substring(dotIdx + 1);
+        const durationSec = (Date.now() - startTime) / 1000;
+        this.metrics?.incrementCounter("gateway_tool_calls_total", {
+          server,
+          tool,
+          status: "success",
+        });
+        this.metrics?.observeHistogram(
+          "gateway_tool_call_duration_seconds",
+          durationSec,
+          { server, tool }
+        );
+      }
+
       return result;
     } catch (error) {
+      // Record error metrics
+      const dotIdx = toolName.indexOf(".");
+      if (dotIdx > 0) {
+        const server = toolName.substring(0, dotIdx);
+        const tool = toolName.substring(dotIdx + 1);
+        const durationSec = (Date.now() - startTime) / 1000;
+        this.metrics?.incrementCounter("gateway_tool_calls_total", {
+          server,
+          tool,
+          status: "error",
+        });
+        this.metrics?.observeHistogram(
+          "gateway_tool_call_duration_seconds",
+          durationSec,
+          { server, tool }
+        );
+        this.metrics?.incrementCounter("gateway_errors_total", {
+          server,
+          type: "tool_call",
+        });
+      }
+
       return {
         content: [
           {
@@ -170,6 +237,13 @@ export class GatewayServer {
         servers,
         activeSessions: this.mcpSessions.size,
       });
+    });
+
+    // GET /metrics -- returns Prometheus-format metrics
+    app.get("/metrics", (_req, res) => {
+      const body = this.metrics?.toPrometheus() ?? "";
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.send(body);
     });
 
     // POST /mcp -- handles MCP messages (initialize + subsequent requests)
@@ -327,6 +401,7 @@ export class GatewayServer {
 
     // Create gateway-level session
     const gatewaySessionId = this.sessions.createSession();
+    this.metrics?.setGauge("gateway_active_sessions", this.mcpSessions.size + 1);
 
     // Create per-session low-level MCP server with tools capability
     const mcpServer = new Server(
@@ -375,6 +450,7 @@ export class GatewayServer {
       if (sid) {
         this.mcpSessions.delete(sid);
         this.sessions.removeSession(gatewaySessionId);
+        this.metrics?.setGauge("gateway_active_sessions", this.mcpSessions.size);
       }
     };
 
