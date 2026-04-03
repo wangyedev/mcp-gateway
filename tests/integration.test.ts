@@ -12,6 +12,8 @@ import { randomUUID } from "crypto";
 import express from "express";
 import type { Server as HttpServer } from "http";
 import * as z from "zod";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
 
 import { ToolRegistry } from "../src/registry.js";
 import { SessionManager } from "../src/session.js";
@@ -387,4 +389,97 @@ describe("Integration: MCP Gateway end-to-end", () => {
       await client2.close();
     }
   }, 15000);
+});
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+describe("Integration: Stdio backend end-to-end", () => {
+  let gateway: GatewayServer;
+  let gatewayPort: number;
+  let backendManager: BackendManager;
+
+  beforeAll(async () => {
+    const registry = new ToolRegistry();
+    const sessions = new SessionManager();
+    const metaTools = new MetaToolHandler(registry, sessions);
+    backendManager = new BackendManager();
+    const router = new Router(registry, backendManager);
+
+    gateway = new GatewayServer({
+      registry,
+      sessions,
+      metaTools,
+      router,
+    });
+
+    // Connect to the stdio test backend
+    const serverPath = `${__dirname}/helpers/stdio-echo-server.ts`;
+    const tools = await backendManager.connectStdio("stdio-test", {
+      command: "npx",
+      args: ["tsx", serverPath],
+    });
+    registry.registerServer("stdio-test", {
+      description: "Stdio test backend",
+      tools,
+    });
+
+    gatewayPort = await gateway.startMcp(0, "127.0.0.1");
+  }, 30000);
+
+  afterAll(async () => {
+    await gateway.stop();
+    await backendManager.disconnectAll();
+  }, 15000);
+
+  test("full flow with stdio backend: activate -> call -> deactivate", async () => {
+    const client = new Client(
+      { name: "stdio-test-client", version: "1.0.0" },
+      { capabilities: {} }
+    );
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${gatewayPort}/mcp`)
+    );
+    await client.connect(transport);
+
+    try {
+      // Should see 2 meta-tools with stdio-test.echo in the catalog
+      const initialTools = await client.listTools();
+      expect(initialTools.tools).toHaveLength(2);
+      const activateDef = initialTools.tools.find(
+        (t) => t.name === "activate_tool"
+      )!;
+      expect(activateDef.description).toContain("stdio-test.echo");
+
+      // Activate
+      const activateResult = await client.callTool({
+        name: "activate_tool",
+        arguments: { name: "stdio-test.echo" },
+      });
+      const activateData = JSON.parse(
+        (activateResult.content as Array<{ type: string; text: string }>)[0]
+          .text
+      );
+      expect(activateData.success).toBe(true);
+
+      // Call
+      const echoResult = await client.callTool({
+        name: "stdio-test.echo",
+        arguments: { message: "hello from stdio" },
+      });
+      expect(
+        (echoResult.content as Array<{ type: string; text: string }>)[0].text
+      ).toBe("stdio-echo: hello from stdio");
+
+      // Deactivate
+      await client.callTool({
+        name: "deactivate_tool",
+        arguments: { name: "stdio-test.echo" },
+      });
+      const finalTools = await client.listTools();
+      expect(finalTools.tools).toHaveLength(2);
+    } finally {
+      await client.close();
+    }
+  }, 30000);
 });
