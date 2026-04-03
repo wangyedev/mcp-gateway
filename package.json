@@ -2,6 +2,7 @@
   "name": "mcp-gateway",
   "version": "0.1.0",
   "description": "MCP gateway server with progressive tool disclosure",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
